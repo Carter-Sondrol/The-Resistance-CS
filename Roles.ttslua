@@ -1,0 +1,2533 @@
+BaseRole = { }
+function BaseRole:new(o)
+   o = o or {}
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Base"
+   self.team = "Null"
+   self.info = "This should not be seen... Error: FixYaClass"
+   self.images = { "Unverified" }
+   self.active = false
+   self.cardLimit = { }
+   return o
+end
+function BaseRole:onAssignment(color)
+   self.color = color
+   self.player = ActivePlayers[color]
+   if self.image == nil then
+      self.image = table.remove(self.images, math.random(#self.images))
+   end
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = color .. "|Black"
+   })
+   return true
+end
+function BaseRole:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+function BaseRole:onVoteBegin()
+   self.player.placard.UI.setAttributes("Vote Token", { active = true, color = "#707070", image = "Vote Back" })
+   Global.UI.setAttributes(self.color.." Votes", { active = true })
+   Global.UI.setAttributes(self.color.." Approve", { isOn = false })
+   Global.UI.setAttributes(self.color.." Reject", { isOn = false })
+end
+function BaseRole:onVoteTally()
+end
+function BaseRole:onBeginMission(onTeam)
+   self.player.playedMissionCard = nil
+
+   if onTeam then
+      self.player.placard.highlightOn({1, 0, 0})
+      self.player.frame.highlightOn({1, 0, 0})
+      Global.UI.setAttributes(self.color..' Mission Cards', { active = true })
+
+      for _, card in pairs(self.cards) do
+         Global.UI.setAttributes(self.color .. " " .. card, { isOn = false, active = false })
+         if self.cardLimit[card] == nil or self.cardLimit[card] > 0 then
+            Global.UI.setAttributes(self.color .. " " .. card, { active = true })
+         end
+      end
+   end
+end
+function BaseRole:onMissionTally(onTeam, playedCards, result)
+   Global.UI.setAttributes(self.color..' Mission Cards', { active = false })
+   self.player.placard.highlightOff()
+   self.player.frame.highlightOff()
+
+   if not onTeam then return playedCards, result end
+   playedCards[self.color] = self.player.playedMissionCard
+   if self.player.playedMissionCard == "Fail" then
+      return playedCards, result + 1
+   end
+   return playedCards, result
+end
+function BaseRole:onMissionResults(onTeam, playedCards, missionResult)
+   return playedCards, missionResult
+end
+function BaseRole:onMissionFail(onTeam)
+end
+function BaseRole:onMissionSuccess(onTeam)
+end
+function BaseRole:onSave()
+   return {
+      image = self.image,
+      color = self.color
+   }
+end
+function BaseRole:onLoad(data)
+   self.image = data.image
+   self.color = data.color
+   self.player = ActivePlayers[data.color]
+   self.image = randomTableEntry(self.images)
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = data.color .. "|Black"
+   })
+end
+
+Amnesiac = BaseRole:new()
+function Amnesiac:new(o)
+   o = o or BaseRole:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.isAmnesiac = true
+   self.name = "Amnesiac"
+   self.cards = { "Success", "Fail", "Unknown" }
+   self.images = { "Amnesiac" }
+   self.trueRole = nil
+   self.trueCard = "Fail"
+   self.compatableRoles = {
+      ["Resistance"] = {}, ["Spy"] = {},
+      ["Commander"] = {}, ["Body Guard"] = {},
+      ["Assassin"] = {}, ["The False Commander"] = {},
+      ["Deep Cover"] = {}, ["Resistance Chief"] = {},
+      ["Spy Chief"] = {}, ["Coordinator"] = {},
+      ["Dummy Agent"] = {}, ["Resistance Reverser"] = { card = "Reverse" },
+      ["Spy Reverser"] = { card = "Reverse" }, ["Pathologist"] = { card = "Cure" },
+      ["Spy Rouge"] = {}, ["Resistance Rouge"] = { card = "Rogue Success" },
+      ["Blind Spy"] = {}, ["Mole"] = { card = "Sabotage" },
+      ["Pilot"] = { card = "Extract" }, ["Hitman"] = { card = "Hit" },
+   }
+
+   self.cardLimit = { ["Extract"] = 2, ["Cure"] = 2, ["Hit"] = 2 }
+   self.winReq = 0
+   self.attemptedAssassin = false
+   return o
+end
+function Amnesiac:onAssignment(color)
+   self.color = color
+   self.player = ActivePlayers[color]
+   if self.image == nil then
+      self.image = table.remove(self.images, math.random(#self.images))
+   end
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = color .. "|Black"
+   })
+   self.trueRole = table.remove(ActiveRoles, math.random(#ActiveRoles))
+
+   local count = 0
+   while self.compatableRoles[self.trueRole.name] == nil and count < 100 do
+      if #ActiveRoles > 0 then
+         local incompat = self.trueRole
+         self.trueRole = table.remove(ActiveRoles, math.random(#ActiveRoles))
+         table.insert(ActiveRoles, incompat)
+         count = count + 1
+      else
+         return false
+      end
+   end
+
+   if count == 100 then
+      return false
+   end
+
+   if self.compatableRoles[self.trueRole.name] ~= nil then
+      self.name = self.trueRole.name
+      self.team = self.trueRole.team
+      self.trueCard = self.compatableRoles[self.trueRole.name].card or "Fail"
+   else
+      return
+   end
+
+   if self.name == "Resistance Rogue" then
+      BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"] = { player = "" }
+   elseif self.name == "Spy Chief" then
+      BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"] = { player = "", onCheck = function(teamSelected)
+      if teamSelected then
+         for color, data in pairs(ActivePlayers) do
+            if color ~= GameData["Current Leader"] and not SelectedTeam[color] and color ~= BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player then
+               data.placard.UI.setAttributes("Team Token", { color = "#707070", image = "Investigator Token", onClick = "Global/SelectInvestigator(" .. color .. ")" })
+            end
+         end
+      else
+         for color, data in pairs(ActivePlayers) do
+            if SelectedTeam[color] then
+               data.placard.UI.setAttributes("Team Token", { color = "#FFFFFF", onClick = "Global/onTeamTokenClick(" .. color .. ")" })
+            else
+               data.placard.UI.setAttributes("Team Token", { color = "#707070", onClick = "Global/onTeamTokenClick(" .. color .. ")" })
+            end
+         end
+      end
+      end }
+   end
+
+   table.insert(GameListeners['Pre-State Change'], self)
+
+   if GameData["Active Player Count"] >= 7 then
+      self.cardLimit = { ["Extract"] = 2, ["Cure"] = 2, ["Hit"] = 2 }
+   else
+      self.cardLimit = { ["Extract"] = 1, ["Cure"] = 1, ["Hit"] = 1 }
+   end
+
+   self.info = "You are an Amnesiac and don't recall anything aside from the fact "
+
+   return true
+end
+function Amnesiac:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local c = 0
+   local ally = RandomPlayer()
+
+
+   while c < 100 and (ActivePlayers[ally].role.team ~= self.team or ally == self.color) do
+      ally = RandomPlayer()
+      c = c + 1
+   end
+
+   ActivePlayers[ally].placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unverified" })
+
+   self.info = self.info .. getPlayerTextColor(ally) .. " is an ally!"
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+function Amnesiac:onMissionTally(onTeam, playedCards, result)
+   Global.UI.setAttributes(self.color..' Mission Cards', { active = false })
+   self.player.placard.highlightOff()
+   self.player.frame.highlightOff()
+
+   if not onTeam then return playedCards, result end
+
+   if self.player.playedMissionCard == "Unknown" then
+      self.player.playedMissionCard = self.trueCard
+   end
+
+   if self.cardLimit[self.player.playedMissionCard] ~= nil then
+      if self.cardLimit[self.player.playedMissionCard] <= 0 then
+         self.player.playedMissionCard = "Success"
+      end
+   end
+
+   if self.name == "Mole" and self.player.playedMissionCard == "Success" then
+      self.player.playedMissionCard = "Sabotage"
+   end
+
+   if self.name == "Spy Chief" and self.player.playedMissionCard == "Fail" and GameData["Active Player Count"] >= 7 then
+      self.player.playedMissionCard = "Chief Fail"
+   end
+
+   if self.player.playedMissionCard == "Rogue Success" and BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"] == self.color then
+      self.player.playedMissionCard = "Success"
+   end
+
+
+   playedCards[self.color] = self.player.playedMissionCard
+   if self.player.playedMissionCard == "Fail" or self.player.playedMissionCard == "Chief Fail" then
+      return playedCards, result + 1
+   elseif self.player.playedMissionCard == "Cure" then
+      local bio = FindPlayerByRole("Bioterrorist")
+      local r = ActivePlayers[bio].role
+
+      for color, onTeam in pairs(SelectedTeam) do
+         if onTeam and ActivePlayers[bio].role.infected[color] then
+            ActivePlayers[bio].role.infected[color] = false
+         end
+      end
+
+      return playedCards, result
+   end
+
+   return playedCards, result
+end
+function Amnesiac:onMissionResults(onTeam, playedCards, missionResult)
+   if self.player.playedMissionCard == "Reverse" then
+      if missionResult == "Fail" then
+         return playedCards, "Success"
+      elseif missionResult == "Success" then
+         return playedCards, "Fail"
+      end
+   elseif self.player.playedMissionCard == "Cure" then
+      self.cardLimit["Cure"] = self.cardLimit["Cure"] - 1
+   elseif self.player.playedMissionCard == "Hit" then
+      local mayor = FindPlayerByRole("Mayor")
+      if SelectedTeam[mayor] then
+         local str = "The Hitman completed a hit on the Mayor [" .. getPlayerHexCode(mayor) .."]" .. (Player[mayor].steam_name or mayor)
+         GameData["Mission Results"].FailCount = 3
+         broadcastToAll(str, {1, 0.4, 0.4})
+         UpdateGameState("Spy Instant Win")
+      else
+         self.cardLimit["Hit"] = self.cardLimit["Hit"] - 1
+      end
+   elseif self.player.playedMissionCard == "Sabotage" then
+      return playedCards, "Sabotage"
+   elseif missionResult ~= "Sabotage" and self.player.playedMissionCard == "Extract" then
+      self.cardLimit["Extract"] = self.cardLimit["Extract"] - 1
+      return playedCards, "Extract"
+   end
+
+   return playedCards, missionResult
+end
+function Amnesiac:onMissionSuccess(onTeam)
+   if onTeam and self.player.playedMissionCard == "Rogue Success" then
+      self.winReq = self.winReq + 1
+   elseif self.name == "Spy Chief" then
+      BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player = GameData["Current Leader"]
+   end
+end
+function Amnesiac:onMissionFail(onTeam)
+   if onTeam and self.name == "Spy Rouge" and self.player.playedMissionCard == "Fail" then
+      self.winReq = self.winReq + 1
+   elseif onTeam and self.name == "Spy Chief" and (self.player.playedMissionCard == "Fail" or self.player.playedMissionCard == "Chief Fail") then
+      local hunter = FindPlayerByRole("Spy Hunter")
+      if not ActivePlayers[hunter].role.active then
+         Global.UI.setAttributes(hunter .. " Ability Button", { active = true })
+      end
+   end
+end
+function Amnesiac:onGamePreStateChange(state)
+   if self.name == "Resistance Rouge" then
+      if state == "Selecting Team" then
+         BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"] = { player = "" }
+         for color, data in pairs(ActivePlayers) do
+            if color ~= GameData["Current Leader"] then
+               data.placard.UI.setAttributes("Leader Token", { active = true, color = "#707070", image = "Watching Token", onClick = "Global/onLeaderTokenClick("..color..")" })
+            end
+         end
+      elseif state == "Team Proposed" then
+         for color, data in pairs(ActivePlayers) do
+            if color ~= GameData["Current Leader"] and color ~= BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"].player then
+               data.placard.UI.setAttributes("Leader Token", { active = false })
+            end
+         end
+      elseif state == "Game Over" and self.winReq >= 2 and GameData["Mission Results"].SuccessCount == 3 and SelectedTeam[self.color] and self.player.playedMissionCard == "Rogue Success" then
+         broadcastToAll("The Resistance Rogue has successfully completed their Mission and won!", {0, 1, 0.5})
+         SpecialWinner = "Resistance Rogue"
+         return "Solo Win"
+      end
+   elseif self.name == "Assassin" then
+      if state == "Game Over" and not self.attemptedAssassin then
+         local spyWin = (GameData["Mission Results"].FailCount == 3)
+         if spyWin then return state end
+
+         for color, data in pairs(ActivePlayers) do
+            if data.role.team == "Spy" then
+               Player[color].team = "Diamonds"
+               data.placard.UI.setAttributes("Team Token", { active = false })
+            else
+               Player[color].team = "Spades"
+               data.placard.UI.setAttributes("Team Token", { active = true, image = 'Assassination Token', color = "#FFFFFF", onClick = "Global/onTeamTokenClick("..color..")" })
+            end
+         end
+
+         broadcastToAll("The Resistance have completed 3 mission - but the Assassin has a chance to assassinate Commander!", {1, 1, 0})
+
+         return "Assassin Guess"
+      end
+   elseif self.name == "Spy Chief" then
+      if state == "Selecting Team" then
+         BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player = ""
+      elseif state == "Mission End" and not self.investigated and GameData["Mission Results"].FailCount ~= 3 and GameData["Mission Results"].SuccessCount ~= 3 then
+         broadcastToAll("The Investigator must choose a player to investigate", {1, 1, 0})
+
+         local invest = BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player
+         for color, data in pairs(ActivePlayers) do
+            if color ~= invest then
+               data.placard.UI.setAttributes("Team Token", { active = true, image = "Select Token", color = "#FFFFFF", onClick = "Global/onTeamTokenClick("..color..")" })
+            else
+               data.placard.UI.setAttributes("Team Token", { active = false })
+            end
+         end
+         self.investigated = true
+         return "Investigator"
+      end
+   end
+
+   return state
+end
+
+ASI = BaseRole:new()
+function ASI:new(o)
+   o = o or BaseRole:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "All Seeing Eye"
+   self.info = "As the All-Seeing Eye, you must choose which team to ally with"
+   self.cards = { ["Resistance"] = "Success", ["Spy"] = "Fail", ["Spy"] = "Extract", ["Spy"] = "Sabotage", ["Spy"] = "Reverse", ["Mayor"] = "Hit", ["Bioterrorist"] = "Cure" }
+   self.images = { "Neutral ASI" }
+   return o
+end
+function ASI:onUI()
+   local inGameRoles = {
+      ["Resistance"] = true,
+      ["Spy"] = true,
+   }
+   for color, data in pairs(ActivePlayers) do
+      inGameRoles[data.role.name] = true
+   end
+
+   local cardsUI = {}
+   for role, card in pairs(self.cards) do
+      if inGameRoles[role] then
+         local cardUI = CreateUiTable("ToggleButton", { id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')', colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card", preferredWidth = 200, preserveAspect = true })
+         table.insert(cardsUI, cardUI)
+      end
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 1500, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+
+   local resistanceButton = CreateUiTable("Button", { id = self.color .. " Ability Button", width = 300, height = 50, rectAlignment = "LowerCenter", resizeTextForBestFit = true, text = "Join the Resistance", onClick = "onAbilityClick(ASI Resistance)" })
+   local spyButton = CreateUiTable("Button", { id = self.color .. " Ability Button Bonus", width = 300, height = 50, rectAlignment = "LowerCenter", resizeTextForBestFit = true, text = "Join the Spies", onClick = "onAbilityClick(ASI Spy)" })
+
+   local rolePanel = CreateUiTable("VerticalLayout", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo, resistanceButton, spyButton})
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+function ASI:onBeginMission(onTeam)
+   self.player.playedMissionCard = nil
+
+   if self.team == "Null" then
+      local scp = FindPlayerByRole("SCP Agent")
+      local scpRole = ActivePlayers[scp].role
+      if math.random(100) <= 50 then
+         self.team = "Spy"
+         self.image = "Spy ASI"
+         self.info = "You have decided to join the Spies"
+
+         scpRole.team = "Resistance"
+         scpRole.image = "Resistance SCP"
+         scpRole.info = "You have been assigned to assist the Resistance"
+      else
+         self.team = "Resistance"
+         self.image = "Resistance ASI"
+         self.info = "You have decided to join the Resistance"
+
+         scpRole.team = "Spy"
+         scpRole.image = "Spy SCP"
+         scpRole.info = "You have been assigned to assist the Spies"
+      end
+
+      Global.UI.setValue(self.color .. " Role Info", self.info)
+      self.player.placard.UI.setAttributes("Role Image", { active = true, image = self.image, visibility = self.color .. "|Black" })
+
+      Global.UI.setValue(scpRole.color .. " Role Info", scpRole.info)
+      scpRole.player.placard.UI.setAttributes("Role Image", { active = true, image = scpRole.image, visibility = scpRole.color .. "|Black" })
+
+      Global.UI.setAttributes(self.color .. " Ability Button", {active = false})
+      Global.UI.setAttributes(self.color .. " Ability Button Bonus", {active = false})
+   end
+
+   if onTeam then
+      self.player.placard.highlightOn({1, 0, 0})
+      self.player.frame.highlightOn({1, 0, 0})
+      Global.UI.setAttributes(self.color..' Mission Cards', { active = true })
+
+      for _, card in pairs(self.cards) do
+         Global.UI.setAttributes(self.color .. " " .. card, { isOn = false, active = true })
+      end
+   end
+end
+function ASI:onMissionTally(onTeam, playedCards, result)
+   Global.UI.setAttributes(self.color..' Mission Cards', { active = false })
+   self.player.placard.highlightOff()
+   self.player.frame.highlightOff()
+
+   if not onTeam then return playedCards, result end
+
+   playedCards[self.color] = self.player.playedMissionCard
+   if self.player.playedMissionCard == "Fail" or self.player.playedMissionCard == "Chief Fail" then
+      return playedCards, result + 1
+   elseif self.player.playedMissionCard == "Cure" then
+      local bio = FindPlayerByRole("Bioterrorist")
+      local r = ActivePlayers[bio].role
+
+      for color, onTeam in pairs(SelectedTeam) do
+         if onTeam and ActivePlayers[bio].role.infected[color] then
+            ActivePlayers[bio].role.infected[color] = false
+         end
+      end
+
+      return playedCards, result
+   end
+
+   return playedCards, result
+end
+function ASI:onMissionResults(onTeam, playedCards, missionResult)
+   if self.player.playedMissionCard == "Reverse" then
+      if missionResult == "Fail" then
+         return playedCards, "Success"
+      elseif missionResult == "Success" then
+         return playedCards, "Fail"
+      end
+   elseif self.player.playedMissionCard == "Hit" then
+      local mayor = FindPlayerByRole("Mayor")
+      if SelectedTeam[mayor] then
+         local str = "The Hitman completed a hit on the Mayor [" .. getPlayerHexCode(mayor) .."]" .. (Player[mayor].steam_name or mayor)
+         GameData["Mission Results"].FailCount = 3
+         broadcastToAll(str, {1, 0.4, 0.4})
+         UpdateGameState("Spy Instant Win")
+      else
+         --self.cardLimit["Hit"] = self.cardLimit["Hit"] - 1
+      end
+   elseif self.player.playedMissionCard == "Sabotage" then
+      return playedCards, "Sabotage"
+   elseif missionResult ~= "Sabotage" and self.player.playedMissionCard == "Extract" then
+      return playedCards, "Extract"
+   end
+
+   return playedCards, missionResult
+end
+
+SCP = BaseRole:new()
+function SCP:new(o)
+   o = o or BaseRole:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "SCP Agent"
+   self.info = "Wait for your assignment from the SCP Foundation"
+   self.cards = { "Success", "Fail", "Extract", "Hit", "Cure", "Sabotage", "Reverse" }
+   self.images = { "Neutral SCP" }
+   self.cardLimit = { ["Extract"] = 0, ["Hit"] = 0, ["Cure"] = 0, ["Sabotage"] = 0, ["Reverse"] = 0 }
+   self.attemptedGuess = false
+   return o
+end
+function SCP:onAssignment(color)
+   self.color = color
+   self.player = ActivePlayers[color]
+   self.image = table.remove(self.images, math.random(#self.images))
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = color .. "|Black"
+   })
+
+   table.insert(GameListeners['Pre-State Change'], self)
+   return true
+end
+function SCP:onMissionTally(onTeam, playedCards, result)
+   Global.UI.setAttributes(self.color..' Mission Cards', { active = false })
+   self.player.placard.highlightOff()
+   self.player.frame.highlightOff()
+
+   for color, data in pairs(ActivePlayers) do
+      if data.playedMissionCard ~= nil then
+         if self.cardLimit[data.playedMissionCard] ~= nil then
+            self.cardLimit[data.playedMissionCard] = self.cardLimit[data.playedMissionCard] + 1
+         end
+      end
+   end
+
+   if not onTeam then return playedCards, result end
+
+   playedCards[self.color] = self.player.playedMissionCard
+   if self.player.playedMissionCard == "Fail" or self.player.playedMissionCard == "Chief Fail" then
+      return playedCards, result + 1
+   elseif self.player.playedMissionCard == "Cure" then
+      local bio = FindPlayerByRole("Bioterrorist")
+      local r = ActivePlayers[bio].role
+
+      for color, onTeam in pairs(SelectedTeam) do
+         if onTeam and ActivePlayers[bio].role.infected[color] then
+            ActivePlayers[bio].role.infected[color] = false
+         end
+      end
+
+      return playedCards, result
+   end
+
+   return playedCards, result
+end
+function SCP:onMissionResults(onTeam, playedCards, missionResult)
+   if self.player.playedMissionCard == "Reverse" then
+      if missionResult == "Fail" then
+         return playedCards, "Success"
+      elseif missionResult == "Success" then
+         return playedCards, "Fail"
+      end
+   elseif self.player.playedMissionCard == "Cure" then
+      self.cardLimit["Cure"] = self.cardLimit["Cure"] - 1
+   elseif self.player.playedMissionCard == "Hit" then
+      local mayor = FindPlayerByRole("Mayor")
+      if SelectedTeam[mayor] then
+         local str = "The Hitman completed a hit on the Mayor [" .. getPlayerHexCode(mayor) .."]" .. (Player[mayor].steam_name or mayor)
+         GameData["Mission Results"].FailCount = 3
+         broadcastToAll(str, {1, 0.4, 0.4})
+         UpdateGameState("Spy Instant Win")
+      else
+         self.cardLimit["Hit"] = self.cardLimit["Hit"] - 1
+      end
+   elseif self.player.playedMissionCard == "Sabotage" then
+      return playedCards, "Sabotage"
+   elseif missionResult ~= "Sabotage" and self.player.playedMissionCard == "Extract" then
+      self.cardLimit["Extract"] = self.cardLimit["Extract"] - 1
+      return playedCards, "Extract"
+   end
+
+   return playedCards, missionResult
+end
+function SCP:onGamePreStateChange(state)
+   if state == "End Game" and not self.attemptedGuess then
+      local spyWin = (GameData["Mission Results"].FailCount == 3)
+      if spyWin and self.team == "Spy" then return state end
+
+      self.player.placard.UI.setAttributes("Public Role Image", { active = true, image = self.image })
+
+      for color, data in pairs(ActivePlayers) do
+         if data.role.team == self.team then
+            data.placard.UI.setAttributes("Team Token", { active = false })
+         else
+            data.placard.UI.setAttributes("Team Token", { active = true, image = 'Select Token', color = "#FFFFFF", onClick = "Global/onTeamTokenClick("..color..")" })
+         end
+      end
+
+      broadcastToAll("The SCP Agent will try to secure and contain the ASI", {1, 1, 0})
+
+      return "SCP Guess"
+   end
+end
+
+-- Resistance
+
+Resistance = BaseRole:new()
+function Resistance:new(o)
+   o = o or BaseRole:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Resistance"
+   self.team = "Resistance"
+   self.info = "You are a member of the Resistance"
+   self.cards = { "Success" }
+   self.images = {}
+   for i = 1, 13 do
+      table.insert(self.images, "Resistance " .. i)
+   end
+   return o
+end
+
+ResistanceReverser = Resistance:new()
+function ResistanceReverser:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Reverser"
+   self.info = "You are a Resistance Reverser"
+   self.cards = { "Success", "Reverse" }
+   self.images = { "Resistance Reverser 1" }
+   return o
+end
+function ResistanceReverser:onMissionResults(onTeam, playedCards, missionResult)
+   if self.player.playedMissionCard ~= "Reverse" then return playedCards, missionResult end
+
+   if missionResult == "Fail" then
+      return playedCards, "Success"
+   elseif missionResult == "Success" then
+      return playedCards, "Fail"
+   else
+      return playedCards, missionResult
+   end
+end
+
+Pilot = Resistance:new()
+function Pilot:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Pilot"
+   self.info = "You are a Resistance Pilot"
+   self.cards = { "Success", "Extract" }
+   self.images = { "Pilot 1" }
+   self.cardLimit = { ["Extract"] = 2 }
+   return o
+end
+function Pilot:onAssignment(color)
+   self.color = color
+   self.player = ActivePlayers[color]
+   self.image = table.remove(self.images, math.random(#self.images))
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = color .. "|Black"
+   })
+   if GameData["Active Player Count"] >= 7 then
+      self.cardLimit = { ["Extract"] = 2 }
+   else
+      self.cardLimit = { ["Extract"] = 1 }
+   end
+   return true
+end
+function Pilot:onMissionResults(onTeam, playedCards, missionResult)
+   if self.player.playedMissionCard ~= "Extract" then return playedCards, missionResult end
+
+   if missionResult ~= "Sabotage" then
+      self.cardLimit["Extract"] = self.cardLimit["Extract"] - 1
+      return playedCards, "Extract"
+   else
+      return playedCards, missionResult
+   end
+end
+
+Commander = Resistance:new()
+function Commander:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Commander"
+   self.info = "You are the Resistance Commander"
+   self.images = { 'Commander 1', 'Commander 2' }
+   return o
+end
+function Commander:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local spyList = ""
+   for color, data in pairs(ActivePlayers) do
+      if color ~= self.color and data.role.team == "Spy" then
+         if data.role.name == "Deep Cover" then
+            spyList = spyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         else
+            spyList = spyList .. "<br/>" .. getPlayerTextColor(color)
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+         end
+      end
+   end
+
+   if spyList == "" then
+      spyList = "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+   end
+   self.info = "You are the Resistance Commander\nThe enemy spies are:"..spyList
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+
+BodyGuard = Resistance:new()
+function BodyGuard:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Body Guard"
+   self.info = "You are a Body Guard for the Resistance"
+   self.images = { 'Body Guard 1', 'Body Guard 2' }
+   return o
+end
+function BodyGuard:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local commander = ""
+   for color, data in pairs(ActivePlayers) do
+      if data.role.name == "Commander" or data.role.name == "False Commander" then
+         if commander == "" then
+            commander = getPlayerTextColor(color)
+         else
+            commander = " either " .. commander .. " or " .. getPlayerTextColor(color)
+         end
+         data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Resistance" })
+      end
+   end
+
+   self.info = "You are a Body Guard for the Resistance\nYour Commander is "..commander
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+
+Witness = Resistance:new()
+function Witness:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Witness"
+   self.info = "You are a Witness for the Resistance"
+   self.images = { 'Witness 1' }
+   self.cards = { "Witness White", "Witness Brown", "Witness Red", "Witness Orange", "Witness Yellow", "Witness Green", "Witness Teal", "Witness Blue", "Witness Purple", "Witness Pink" }
+   return o
+end
+function Witness:onBeginMission(onTeam)
+   self.player.playedMissionCard = nil
+
+   if onTeam then
+      self.player.placard.highlightOn({1, 0, 0})
+      self.player.frame.highlightOn({1, 0, 0})
+      Global.UI.setAttributes(self.color..' Mission Cards', { active = true })
+
+      for _, card in pairs(self.cards) do
+         Global.UI.setAttributes(self.color .. " " .. card, { isOn = false, active = false })
+      end
+
+      for color, data in pairs(ActivePlayers) do
+         Global.UI.setAttributes(self.color .. " " .. "Witness " .. color, { active = (SelectedTeam[color] and color ~= self.color) })
+      end
+   end
+end
+function Witness:onMissionTally(onTeam, playedCards, result)
+   Global.UI.setAttributes(self.color..' Mission Cards', { active = false })
+   self.player.placard.highlightOff()
+   self.player.frame.highlightOff()
+
+   if not onTeam then return playedCards, result end
+
+   local witnessColor = string.sub(self.player.playedMissionCard, 9, string.len(self.player.playedMissionCard))
+   self.player.playedMissionCard = ActivePlayers[witnessColor].playedMissionCard
+   playedCards[self.color] = self.player.playedMissionCard
+   if self.player.playedMissionCard == "Fail" then
+      return playedCards, result + 1
+   end
+   return playedCards, result
+end
+function Witness:onMissionResults(onTeam, playedCards, missionResult)
+   if self.player.playedMissionCard == "Reverse" then
+      if missionResult == "Fail" then
+         return playedCards, "Success"
+      elseif missionResult == "Success" then
+         return playedCards, "Fail"
+      end
+   end
+
+   return playedCards, missionResult
+end
+
+Hacker = Resistance:new()
+function Hacker:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Hacker"
+   self.info = "You are a Hacker for the Resistance"
+   self.images = { 'Hacker 1' }
+   return o
+end
+function Hacker:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+
+   local targetButtons = {}
+   for clr, data in pairs(ActivePlayers) do
+      local trgBut = CreateUiTable("ToggleButton", {
+         id = self.color .. " Target " .. clr,
+         onClick = 'onTargetClick('..clr..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = "Select " .. clr,
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(targetButtons, trgBut)
+   end
+   local selectTarget = CreateUiTable("HorizontalLayout", { active = false, id = self.color..' Hack Target', spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 300', width = 800, height = 50 }, targetButtons)
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel, selectTarget})
+end
+function Hacker:onVoteBegin()
+   self.player.placard.UI.setAttributes("Vote Token", { active = true, color = "#707070", image = "Vote Back" })
+   Global.UI.setAttributes(self.color.." Votes", { active = true })
+   Global.UI.setAttributes(self.color.." Approve", { isOn = false })
+   Global.UI.setAttributes(self.color.." Reject", { isOn = false })
+
+   for clr, data in pairs(ActivePlayers) do
+      Global.UI.setAttributes(self.color .. " Target " .. clr, { isOn = false })
+   end
+
+   Global.UI.setAttributes(self.color..' Hack Target', { active = true })
+end
+function Hacker:onVoteTally()
+   if self.target == nil then
+      self.target = self.color
+   end
+
+   local corruptor = FindPlayerByRole("Corruptor")
+   if corruptor ~= nil then
+      if self.target == ActivePlayers[corruptor].role.target and self.target ~= self.color then
+         GameData["Selected Votes"][self.color] = GameData["Selected Votes"][corruptor]
+      end
+   end
+
+   local other = ActivePlayers[self.target].role
+   if other.name == "Mayor" or other.name == "Politician" then
+      if other.active then
+         GameData["Selected Votes"][other.color .. " Bonus"] = GameData["Selected Votes"][self.color]
+      end
+   end
+
+   Global.UI.setAttributes(self.color..' Hack Target', { active = false })
+   GameData["Selected Votes"][self.target] = GameData["Selected Votes"][self.color]
+   self.target = nil
+end
+
+Mayor = Resistance:new()
+function Mayor:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Mayor"
+   self.info = "You are the Mayor working with the Resistance"
+   self.images = { 'Mayor 1' }
+   return o
+end
+function Mayor:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local activateButton = CreateUiTable("Button", { id = self.color .. " Ability Button", width = 300, height = 50, rectAlignment = "LowerCenter", resizeTextForBestFit = true, text = "Reveal Self", onClick = "onAbilityClick(Mayor)" })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo, activateButton})
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+function Mayor:onVoteTally()
+   if self.active then
+      GameData["Selected Votes"][self.color .. " Bonus"] = GameData["Selected Votes"][self.color]
+   end
+end
+
+Pretender = Resistance:new()
+function Pretender:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Pretender"
+   self.info = "You are a Pretender allied with the Resistance"
+   self.images = { 'Pretender 1' }
+   return o
+end
+
+Pathologist = Resistance:new()
+function Pathologist:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Pathologist"
+   self.info = "You are a Resistance Pathologist working towards a cure"
+   self.cards = { "Success", "Cure" }
+   self.images = { "Pathologist 1" }
+   self.cardLimit = { ["Cure"] = 2 }
+   return o
+end
+function Pathologist:onAssignment(color)
+   self.color = color
+   self.player = ActivePlayers[color]
+   self.image = table.remove(self.images, math.random(#self.images))
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = color .. "|Black"
+   })
+   if GameData["Active Player Count"] >= 7 then
+      self.cardLimit = { ["Cure"] = 2 }
+   else
+      self.cardLimit = { ["Cure"] = 1 }
+   end
+   return true
+end
+function Pathologist:onMissionTally(onTeam, playedCards, result)
+   Global.UI.setAttributes(self.color..' Mission Cards', { active = false })
+   self.player.placard.highlightOff()
+   self.player.frame.highlightOff()
+
+   if not onTeam then return playedCards, result end
+
+   playedCards[self.color] = self.player.playedMissionCard
+   if self.player.playedMissionCard ~= "Cure" then return playedCards, result end
+
+   local bio = FindPlayerByRole("Bioterrorist")
+   local r = ActivePlayers[bio].role
+
+   for color, onTeam in pairs(SelectedTeam) do
+      if onTeam and ActivePlayers[bio].role.infected[color] then
+         ActivePlayers[bio].role.infected[color] = false
+      end
+   end
+
+   return playedCards, result
+end
+function Pathologist:onMissionResults(onTeam, playedCards, missionResult)
+   if self.player.playedMissionCard ~= "Cure" then return playedCards, missionResult end
+   self.cardLimit["Cure"] = self.cardLimit["Cure"] - 1
+   return playedCards, missionResult
+end
+
+ResistanceRogue = Resistance:new()
+function ResistanceRogue:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Resistance Rogue"
+   self.info = "You are a Rogue Resistance member!"
+   self.cards = { "Success", "Rogue Success" }
+   self.images = { "Resistance Rogue 1" }
+   self.winReq = 0
+   return o
+end
+function ResistanceRogue:onAssignment(color)
+   self.color = color
+   self.player = ActivePlayers[color]
+   self.image = table.remove(self.images, math.random(#self.images))
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = color .. "|Black"
+   })
+
+   BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"] = { player = "" }
+   table.insert(GameListeners['Pre-State Change'], self)
+   return true
+end
+function ResistanceRogue:onBeginMission(onTeam)
+   self.player.playedMissionCard = nil
+
+   if onTeam then
+      self.player.placard.highlightOn({1, 0, 0})
+      self.player.frame.highlightOn({1, 0, 0})
+      Global.UI.setAttributes(self.color..' Mission Cards', { active = true })
+
+      for _, card in pairs(self.cards) do
+         Global.UI.setAttributes(self.color .. " " .. card, { isOn = false, active = true })
+      end
+
+      if BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"] == self.color then
+         Global.UI.setAttributes(self.color .. " Rogue Success", { isOn = false, active = false })
+      end
+   end
+end
+function ResistanceRogue:onMissionSuccess(onTeam)
+   if onTeam and self.player.playedMissionCard == "Rogue Success" then
+      self.winReq = self.winReq + 1
+   end
+end
+function ResistanceRogue:onGamePreStateChange(state)
+   if state == "Selecting Team" then
+      BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"] = { player = "" }
+      for color, data in pairs(ActivePlayers) do
+         if color ~= GameData["Current Leader"] then
+            data.placard.UI.setAttributes("Leader Token", { active = true, color = "#707070", image = "Watching Token", onClick = "Global/onLeaderTokenClick("..color..")" })
+         end
+      end
+   elseif state == "Team Proposed" then
+      for color, data in pairs(ActivePlayers) do
+         if color ~= GameData["Current Leader"] and color ~= BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"].player then
+            data.placard.UI.setAttributes("Leader Token", { active = false })
+         end
+      end
+   elseif state == "Game Over" and self.winReq >= 2 and GameData["Mission Results"].SuccessCount == 3 and SelectedTeam[self.color] and self.player.playedMissionCard == "Rogue Success" then
+      broadcastToAll("The Resistance Rogue has successfully completed their Mission and won!", {0, 1, 0.5})
+      SpecialWinner = "Resistance Rogue"
+      return "Solo Win"
+   end
+
+   return state
+end
+
+ResistanceDefector = Resistance:new()
+function ResistanceDefector:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Resistance Defector"
+   self.info = "You are a Defector currently allied with the Resistance!"
+   self.cards = { "Success", "Fail" }
+   self.images = { "Resistance Defector 2" }
+   return o
+end
+function ResistanceDefector:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   if GameOptions["Know Defectors"] then
+      local other = FindPlayerByRole("Spy Defector")
+      self.info = self.info .. " The other Defector is " .. getPlayerTextColor(other)
+   end
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+function ResistanceDefector:onBeginMission(onTeam)
+   self.player.playedMissionCard = nil
+
+   if onTeam then
+      self.player.placard.highlightOn({1, 0, 0})
+      self.player.frame.highlightOn({1, 0, 0})
+      Global.UI.setAttributes(self.color..' Mission Cards', { active = true })
+
+      for _, card in pairs(self.cards) do
+         Global.UI.setAttributes(self.color .. " " .. card, { isOn = false, active = true })
+      end
+
+      if self.team ~= "Spy" then
+         Global.UI.setAttributes(self.color .. " Fail", { active = false })
+      end
+   end
+end
+function ResistanceDefector:onMissionSuccess(onTeam)
+   DefectorSwaps(self)
+end
+function ResistanceDefector:onMissionFail(onTeam)
+   DefectorSwaps(self)
+end
+
+Confidant = Resistance:new()
+function Confidant:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Confidant"
+   self.info = "You are a Confidant"
+   self.images = { 'Confidant 1' }
+   return o
+end
+function Confidant:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local spyList = ""
+   for color, data in pairs(ActivePlayers) do
+      if data.role.name == "Resistance Defector" or data.role.name == "Spy Defector" then
+         spyList = spyList .. " and " .. getPlayerTextColor(color)
+         data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unverified" })
+      end
+   end
+
+   self.info = "You are part of the Resistance!\nDefectors are "..string.sub(spyList, 6, string.len(spyList))
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+
+function DefectorSwaps(self)
+   if GameData["Mission Results"].FailCount + GameData["Mission Results"].SuccessCount >= 2 then
+      local other = FindPlayerByRole("Spy Defector")
+
+      if math.random(5) < 3 then
+         local otherData = ActivePlayers[other]
+         local otherRole = otherData.role
+
+         if self.team ~= "Spy" then
+            self.team = "Spy"
+            self.image = "Spy Defector 2"
+            self.info = "You are a Defector currently allied with the Spies!"
+
+            otherRole.team = "Resistance"
+            otherRole.image = "Resistance Defector 1"
+            otherRole.info = "You are a Defector currently allied with the Resistance!"
+         else
+            self.team = "Resistance"
+            self.image = "Resistance Defector 2"
+            self.info = "You are a Defector currently allied with the Resistance!"
+
+            otherRole.team = "Spy"
+            otherRole.image = "Spy Defector 1"
+            otherRole.info = "You are a Defector currently allied with the Spies!"
+         end
+
+         if GameOptions["Know Defectors"] then
+            self.info = self.info .. " The other Defector is " .. getPlayerTextColor(other)
+            otherRole.info = otherRole.info .. " The other Defector is " .. getPlayerTextColor(self.color)
+         end
+
+         Global.UI.setValue(self.color .. " Role Info", self.info)
+         Global.UI.setValue(other .. " Role Info", otherRole.info)
+
+         self.player.placard.UI.setAttributes("Role Image", { image = self.image })
+         otherRole.player.placard.UI.setAttributes("Role Image", { image = otherRole.image })
+
+         if Player[self.color].seated then
+            safeBroadcastToColor("Your Allegiance has changed!", self.color, {1, 1, 0})
+         end
+         if Player[other].seated then
+            safeBroadcastToColor("Your Allegiance has changed!", other, {1, 1, 0})
+         end
+
+         if GameOptions["Public Defectors"] then
+            broadcastToAll("The Defectors have defected!", {1, 0, 0})
+         else
+            local confidant = FindPlayerByRole("Confidant")
+            if Player[confidant].seated then
+               safeBroadcastToColor("The Defectors have swapped Allegiance!", confidant, {1, 0, 0})
+            end
+         end
+      else
+         if Player[self.color].seated then
+            safeBroadcastToColor("You remain loyal to your current team", self.color, {1, 1, 0})
+         end
+         if Player[other].seated then
+            safeBroadcastToColor("You remain loyal to your current team", other, {1, 1, 0})
+         end
+
+         if GameOptions["Public Defectors"] then
+            broadcastToAll("The Defectors remain loyal!", {0, 1, 0})
+         else
+            local confidant = FindPlayerByRole("Confidant")
+            if Player[confidant].seated then
+               safeBroadcastToColor("The Defectors have remained loyal!", confidant, {0, 1, 0})
+            end
+         end
+      end
+   end
+end
+
+ResistanceChief = Resistance:new()
+function ResistanceChief:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Resistance Chief"
+   self.info = "You are a Chief for the Resistance!"
+   self.images = { 'Resistance Chief 1', 'Resistance Chief 2' }
+   return o
+end
+function ResistanceChief:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   if GameData["Active Player Count"] > 7 then
+      local other = FindPlayerByRole("Resistance Chief", self.color)
+      self.info = self.info .. " Your fellow Chief is " .. getPlayerTextColor(other)
+   end
+
+   local other = FindPlayerByRole("Coordinator")
+   if other ~= nil then
+      self.info = self.info .. ". Your Coordinator is " .. getPlayerTextColor(other)
+   end
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+
+ResistanceHunter = Resistance:new()
+function ResistanceHunter:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Resistance Hunter"
+   self.info = "You are a Resistance Hunter"
+   self.images = { 'Resistance Hunter 1' }
+   self.correctGuess = false
+
+   table.insert(GameListeners['Priority-State Change'], self)
+
+   return o
+end
+function ResistanceHunter:onGamePriorityStateChange(state)
+   if state == "Game Over" and GameData["Mission Results"].SuccessCount == 3 and not self.correctGuess then
+      -- Do hunter stuffs
+      for color, data in pairs(ActivePlayers) do
+         data.placard.UI.setAttributes("Team Token", { active = true, image = 'Hunter Token', color = "#FFFFFF", onClick = "Global/onTeamTokenClick("..color..")" })
+
+         if data.role.name == "Resistance Hunter" then
+            data.placard.UI.setAttributes("Team Token", { active = false })
+            data.placard.UI.setAttributes("Public Role Image", { active = true, image = "Resistance Hunter 1" })
+         end
+      end
+
+      return "Resistance Hunter Guess"
+   end
+
+   return state
+end
+
+Coordinator = Resistance:new()
+function Coordinator:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Coordinator"
+   self.info = "You are a Coordinator for the Resistance!"
+   self.images = { 'Coordinator 1' }
+   return o
+end
+
+DummyAgent = Resistance:new()
+function DummyAgent:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Dummy Agent"
+   self.info = "You are a Resistance Dummy Agent!"
+   self.images = { 'Dummy Agent 1' }
+   return o
+end
+
+ResistanceClone = Resistance:new()
+function ResistanceClone:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Clone"
+   self.info = "You are a Clone! After round 2 you'll attempt to clone someone"
+   self.cards = { "Success", "Fail", "Extract", "Chief Fail", "Hit", "Cure", "Sabotage", "Reverse Card", "Rogue Success Card", "Witness White", "Witness Brown", "Witness Red", "Witness Orange", "Witness Yellow", "Witness Green", "Witness Teal", "Witness Blue", "Witness Purple", "Witness Pink" }
+   self.images = { 'Clone 1' }
+   return o
+end
+function ResistanceClone:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         active = false,
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local activateButton = CreateUiTable("Button", { active = false, id = self.color .. " Ability Button", width = 300, height = 50, rectAlignment = "LowerCenter", resizeTextForBestFit = true, text = "Reveal Self", onClick = "onAbilityClick(Mayor)" })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo, activateButton})
+
+   local targetButtons = {}
+   for clr, data in pairs(ActivePlayers) do
+      local trgBut = CreateUiTable("ToggleButton", {
+         id = self.color .. " Target " .. clr,
+         onClick = 'onTargetClick('..clr..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = "Select " .. clr,
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(targetButtons, trgBut)
+   end
+   local selectTarget = CreateUiTable("HorizontalLayout", { active = false, id = self.color..' Hack Target', spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 300', width = 800, height = 50 }, targetButtons)
+
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel, selectTarget})
+end
+function ResistanceClone:onBeginMission(onTeam)
+   self.player.playedMissionCard = nil
+
+   if onTeam then
+      self.player.placard.highlightOn({1, 0, 0})
+      self.player.frame.highlightOn({1, 0, 0})
+      Global.UI.setAttributes(self.color..' Mission Cards', { active = true })
+
+      for _, card in pairs({"Success", "Fail"}) do
+         Global.UI.setAttributes(self.color .. " " .. card, { isOn = false, active = true })
+      end
+   end
+end
+function ResistanceClone:onMissionSuccess()
+   if GameData["Mission Results"].FailCount + GameData["Mission Results"].SuccessCount == 2 then
+      local spyClone = FindPlayerByRole("Clone", self.color)
+      local failedClone, successfulClone = spyClone, self.color
+      if math.random(100) <= 50 then failedClone, successfulClone = self.color, spyClone end
+
+      local fc = ActivePlayers[failedClone]
+      fc.placard.UI.setAttributes("Role Image", { image = "Failed Clone" })
+
+      local c = 0
+      local ally = RandomPlayer()
+      while c < 100 and (ActivePlayers[ally].role.team ~= fc.role.team or ally == failedClone) do
+         ally = RandomPlayer()
+         c = c + 1
+      end
+      fc.role.info = "The cloning has failed! But you know " .. getPlayerTextColor(ally) .. " is on your team"
+      Global.UI.setValue(failedClone .. " Role Info", fc.role.info)
+
+      local sc = ActivePlayers[successfulClone]
+      c = 0
+      ally = RandomPlayer()
+      while c < 100 and (ActivePlayers[ally].role.team ~= sc.role.team or ally == successfulClone) do
+         ally = RandomPlayer()
+         c = c + 1
+      end
+      local allyData = ActivePlayers[ally]
+      sc.placard.UI.setAttributes("Role Image", { image = allyData.role.image })
+      sc.role.info = allyData.role.info
+
+      ActivePlayers[successfulClone].role = roleCards[allyData.role.name].class:new()
+      ActivePlayers[successfulClone].role:onAssignment(successfulClone)
+      local newUi = ActivePlayers[successfulClone].role:onUI()
+      UpdateUI(successfulClone, newUi)
+      Global.UI.setValue(successfulClone .. " Role Info", ActivePlayers[successfulClone].role.info)
+   end
+end
+function ResistanceClone:onMissionFail()
+   if GameData["Mission Results"].FailCount + GameData["Mission Results"].SuccessCount == 2 then
+      self:onMissionSuccess()
+   end
+end
+
+function UpdateUI(color, uiTbl)
+   for i, dat in pairs(uiTbl) do
+      if dat.attributes ~= nil then
+         local attr = data.attributes
+         if attr.id ~= nil then
+            local newAttr = {}
+            for k, v in pairs(attr) do
+               if k ~= "ui" then
+                  newAttr[k] = v
+               end
+            end
+            Global.UI.setAttributes(attr.id, newAttr)
+         end
+      end
+      if dat.children ~= nil then
+         for i, tbl in pairs(dat.children) do
+            UpdateUI(color, tbl)
+         end
+      end
+   end
+end
+
+-- Spies
+
+Spy = BaseRole:new()
+function Spy:new(o)
+   o = o or BaseRole:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Spy"
+   self.team = "Spy"
+   self.cards = { "Success", "Fail" }
+   self.images = {}
+   for i = 1, 8 do
+      table.insert(self.images, "Spy " .. i)
+   end
+   return o
+end
+function Spy:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local allyList = ""
+   for color, data in pairs(ActivePlayers) do
+      if color ~= self.color and data.role.team == "Spy" then
+         if data.role.name == "Blind Spy" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Rogue" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Spy Defector" or data.role.name == "Resistance Defector" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEFECTOR] </textcolor>" .. getPlayerTextColor(color)
+         elseif data.role.name == "Deep Agent" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+         else
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/>" .. getPlayerTextColor(color)
+         end
+      elseif data.role.name == "Pretender" then
+         data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+         allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+      elseif data.role.name == "Spy Defector" or data.role.name == "Resistance Defector" then
+         data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+         allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEFECTOR] </textcolor>" .. getPlayerTextColor(color)
+      end
+   end
+
+   if ActiveOptions["Blind Mode"] ~= nil or allyList == "" then
+      allyList = "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+   end
+   self.info = "You are a " .. self.name .. "\nYour ally spies are:"..allyList
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+
+SpyReverser = Spy:new()
+function SpyReverser:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Reverser"
+   self.info = "You are a Spy Reverser"
+   self.cards = { "Success", "Fail", "Reverse" }
+   self.images = { "Spy Reverser 1" }
+   return o
+end
+function SpyReverser:onMissionResults(onTeam, playedCards, missionResult)
+   if self.player.playedMissionCard ~= "Reverse" then return playedCards, missionResult end
+
+   if missionResult == "Fail" then
+      return playedCards, "Success"
+   elseif missionResult == "Success" then
+      return playedCards, "Fail"
+   else
+      return playedCards, missionResult
+   end
+end
+
+FalseCommander = Spy:new()
+function FalseCommander:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "False Commander"
+   self.info = "You are a False Commander"
+   self.images = { 'False Commander 1', 'False Commander 2' }
+   return o
+end
+
+DeepCover = Spy:new()
+function DeepCover:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Deep Cover"
+   self.info = "You are a Deep Cover spy"
+   self.images = { 'Deep Cover 1', 'Deep Cover 2' }
+   return o
+end
+
+BlindSpy = Spy:new()
+function BlindSpy:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Blind Spy"
+   self.info = "You are a Blind spy"
+   self.images = { 'Blind Spy 1', 'Blind Spy 2' }
+   return o
+end
+
+Corruptor = Spy:new()
+function Corruptor:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Corruptor"
+   self.info = "You are a Spy Corruptor"
+   self.images = { 'Corruptor 1' }
+   return o
+end
+function Corruptor:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+
+   local allyList = ""
+   for color, data in pairs(ActivePlayers) do
+      if color ~= self.color and data.role.team == "Spy" then
+         if data.role.name == "Blind Spy" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Rogue" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Spy Defector" or data.role.name == "Resistance Defector" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEFECTOR] </textcolor>" .. getPlayerTextColor(color)
+         elseif data.role.name == "Deep Agent" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+         else
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/>" .. getPlayerTextColor(color)
+         end
+      elseif data.role.name == "Pretender" then
+         data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+         allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+      end
+   end
+   if ActiveOptions["Blind Mode"] ~= nil or allyList == "" then
+      allyList = "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+   end
+   self.info = "You are a " .. self.name .. "\nYour ally spies are:"..allyList
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+
+   local targetButtons = {}
+   for clr, data in pairs(ActivePlayers) do
+      local trgBut = CreateUiTable("ToggleButton", {
+         id = self.color .. " Target " .. clr,
+         onClick = 'onTargetClick('..clr..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = "Select " .. clr,
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(targetButtons, trgBut)
+   end
+   local selectTarget = CreateUiTable("HorizontalLayout", { active = false, id = self.color..' Hack Target', spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 300', width = 800, height = 50 }, targetButtons)
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel, selectTarget})
+end
+function Corruptor:onVoteBegin()
+   self.player.placard.UI.setAttributes("Vote Token", { active = true, color = "#707070", image = "Vote Back" })
+   Global.UI.setAttributes(self.color.." Votes", { active = true })
+   Global.UI.setAttributes(self.color.." Approve", { isOn = false })
+   Global.UI.setAttributes(self.color.." Reject", { isOn = false })
+
+   for clr, data in pairs(ActivePlayers) do
+      Global.UI.setAttributes(self.color .. " Target " .. clr, { isOn = false })
+   end
+
+   Global.UI.setAttributes(self.color..' Hack Target', { active = true })
+end
+function Corruptor:onVoteTally()
+   if self.target == nil then
+      self.target = self.color
+   end
+
+   Global.UI.setAttributes(self.color..' Hack Target', { active = false })
+   self.target = nil
+end
+
+Assassin = Spy:new()
+function Assassin:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Assassin"
+   self.team = "Spy"
+   self.cards = { "Success", "Fail" }
+   self.images = { "Assassin 1", "Assassin 2" }
+   self.attemptedAssassin = false
+   return o
+end
+function Assassin:onAssignment(color)
+   self.color = color
+   self.player = ActivePlayers[color]
+   self.image = table.remove(self.images, math.random(#self.images))
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = color .. "|Black"
+   })
+
+   table.insert(GameListeners['Pre-State Change'], self)
+   return true
+end
+function Assassin:onGamePreStateChange(state)
+   if state == "Game Over" and not self.attemptedAssassin then
+      local spyWin = (GameData["Mission Results"].FailCount == 3)
+      if spyWin then return state end
+
+      for color, data in pairs(ActivePlayers) do
+         if data.role.team == "Spy" then
+            Player[color].team = "Diamonds"
+            data.placard.UI.setAttributes("Team Token", { active = false })
+         else
+            Player[color].team = "Spades"
+            data.placard.UI.setAttributes("Team Token", { active = true, image = 'Assassination Token', color = "#FFFFFF", onClick = "Global/onTeamTokenClick("..color..")" })
+         end
+      end
+
+      broadcastToAll("The Resistance have completed 3 mission - but the Assassin has a chance to assassinate Commander!", {1, 1, 0})
+
+      return "Assassin Guess"
+   end
+
+   return state
+end
+
+Politician = Spy:new()
+function Politician:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Politician"
+   self.info = "You are a Politician allied with the Spies"
+   self.images = { 'Politician 1' }
+   return o
+end
+function Politician:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local allyList = ""
+   for color, data in pairs(ActivePlayers) do
+      if color ~= self.color and data.role.team == "Spy" then
+         if data.role.name == "Blind Spy" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Rogue" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Spy Defector" or data.role.name == "Resistance Defector" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEFECTOR] </textcolor>" .. getPlayerTextColor(color)
+         elseif data.role.name == "Deep Agent" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+         else
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/>" .. getPlayerTextColor(color)
+         end
+      elseif data.role.name == "Pretender" then
+         data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+         allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+      end
+   end
+   if ActiveOptions["Blind Mode"] ~= nil or allyList == "" then
+      allyList = "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+   end
+   self.info = "You are a " .. self.name .. "\nYour ally spies are:"..allyList
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local activateButton = CreateUiTable("Button", { id = self.color .. " Ability Button", width = 300, height = 50, rectAlignment = "LowerCenter", resizeTextForBestFit = true, text = "Reveal Self", onClick = "onAbilityClick(Mayor)" })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo, activateButton})
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+function Politician:onVoteTally()
+   if self.active then
+      GameData["Selected Votes"][self.color .. " Bonus"] = GameData["Selected Votes"][self.color]
+   end
+end
+
+Hitman = Spy:new()
+function Hitman:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Hitman"
+   self.info = "You are a Hitman hired by the Spies"
+   self.cards = { "Success", "Fail", "Hit" }
+   self.images = { "Hitman 1" }
+   self.cardLimit = { ["Hit"] = 2 }
+   return o
+end
+function Hitman:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local allyList = ""
+   for color, data in pairs(ActivePlayers) do
+      if color ~= self.color and data.role.team == "Spy" then
+         if data.role.name == "Blind Spy" or data.role.name == "Politician" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Rogue" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Spy Defector" or data.role.name == "Resistance Defector" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEFECTOR] </textcolor>" .. getPlayerTextColor(color)
+         elseif data.role.name == "Deep Agent" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+         else
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/>" .. getPlayerTextColor(color)
+         end
+      elseif data.role.name == "Pretender" then
+         data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+         allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+      end
+   end
+   if ActiveOptions["Blind Mode"] ~= nil or allyList == "" then
+      allyList = "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+   end
+   self.info = "You are a " .. self.name .. "\nYour ally spies are:"..allyList
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+function Hitman:onAssignment(color)
+   self.color = color
+   self.player = ActivePlayers[color]
+   self.image = table.remove(self.images, math.random(#self.images))
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = color .. "|Black"
+   })
+
+   if GameData["Active Player Count"] >= 7 then
+      self.cardLimit = { ["Hit"] = 2 }
+   else
+      self.cardLimit = { ["Hit"] = 1 }
+   end
+   return true
+end
+function Hitman:onMissionResults(onTeam, playedCards, missionResult)
+   if self.player.playedMissionCard ~= "Hit" then return playedCards, missionResult end
+   local mayor = FindPlayerByRole("Mayor")
+   if SelectedTeam[mayor] then
+      local str = "The Hitman completed a hit on the Mayor [" .. getPlayerHexCode(mayor) .."]" .. (Player[mayor].steam_name or mayor)
+      GameData["Mission Results"].FailCount = 3
+      broadcastToAll(str, {1, 0.4, 0.4})
+      UpdateGameState("Game Over")
+   else
+      self.cardLimit["Hit"] = self.cardLimit["Hit"] - 1
+      return playedCards, missionResult
+   end
+end
+
+DeepAgent = Spy:new()
+function DeepAgent:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Deep Agent"
+   self.team = "Spy"
+   self.cards = { "Success", "Fail" }
+   self.images = { "Deep Agent 1" }
+   return o
+end
+function DeepAgent:onAssignment(color)
+   self.color = color
+   self.player = ActivePlayers[color]
+   if self.image == nil then
+      self.image = table.remove(self.images, math.random(#self.images))
+   end
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = color .. "|Black"
+   })
+
+   local pretender = FindPlayerByRole("Pretender")
+   if pretender ~= nil and not self.active then
+      table.insert(GameListeners['Pre-State Change'], self)
+   end
+   return true
+end
+function DeepAgent:onGamePreStateChange(state)
+   if state == "Selecting Team" and not self.active then
+      UI.setAttributes(self.color .. " Ability Button", {active = true})
+   elseif state == "Deep Agent Guess" and self.active then
+      for color, data in pairs(ActivePlayers) do
+         if color ~= self.color then
+            data.placard.UI.setAttributes("Team Token", {
+               active = true,
+               color = "#FFFFFF",
+               image = "Select Token",
+               onClick = "Global/onTeamTokenClick("..color..")"
+            })
+         end
+      end
+
+      broadcastToAll("The Deep Agent has revealed themselves and will try to blame the Pretender!", {1, 1, 0})
+   else
+      UI.setAttributes(self.color .. " Ability Button", {active = false})
+   end
+   return state
+end
+function DeepAgent:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   self.info = "You are a Deep Agent spy and have no information on ally spies"
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local activateButton = CreateUiTable("Button", { active = false, id = self.color .. " Ability Button", width = 300, height = 50, rectAlignment = "LowerCenter", resizeTextForBestFit = true, text = "Reveal Self", onClick = "onAbilityClick(Deep Agent)" })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo, activateButton})
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+
+Bioterrorist = Spy:new()
+function Bioterrorist:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Bioterrorist"
+   self.team = "Spy"
+   self.cards = { "Success", "Fail" }
+   self.images = { "Bioterrorist 1" }
+   self.infected = { }
+   return o
+end
+function Bioterrorist:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local allyList = ""
+   for color, data in pairs(ActivePlayers) do
+      self.infected[color] = false
+
+      if color ~= self.color and data.role.team == "Spy" then
+         if data.role.name == "Blind Spy" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Rogue" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Spy Defector" or data.role.name == "Resistance Defector" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEFECTOR] </textcolor>" .. getPlayerTextColor(color)
+         elseif data.role.name == "Deep Agent" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+         else
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/>" .. getPlayerTextColor(color)
+         end
+      elseif data.role.name == "Pretender" then
+         data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+         allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+      end
+   end
+
+   if ActiveOptions["Blind Mode"] ~= nil or allyList == "" then
+      allyList = "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+   end
+   self.info = "You are a " .. self.name .. "\nYour ally spies are:"..allyList
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+
+   local targetButtons = {}
+   for clr, data in pairs(ActivePlayers) do
+      local trgBut = CreateUiTable("ToggleButton", {
+         id = self.color .. " Target " .. clr,
+         onClick = 'onTargetClick('..clr..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = "Select " .. clr,
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(targetButtons, trgBut)
+   end
+   local selectTarget = CreateUiTable("HorizontalLayout", { active = false, id = self.color..' Hack Target', spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 300', width = 800, height = 50 }, targetButtons)
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel, selectTarget})
+end
+function Bioterrorist:onBeginMission(onTeam)
+   self.player.playedMissionCard = nil
+
+   if onTeam then
+      self.player.placard.highlightOn({1, 0, 0})
+      self.player.frame.highlightOn({1, 0, 0})
+      Global.UI.setAttributes(self.color..' Mission Cards', { active = true })
+
+      for _, card in pairs(self.cards) do
+         Global.UI.setAttributes(self.color .. " " .. card, { isOn = false, active = false })
+         if self.cardLimit[card] == nil or self.cardLimit[card] > 0 then
+            Global.UI.setAttributes(self.color .. " " .. card, { active = true })
+         end
+      end
+
+      for color, data in pairs(ActivePlayers) do
+         if SelectedTeam[color] then
+            Global.UI.setAttributes(self.color .. " Target " .. color, { active = true, isOn = false })
+         else
+            Global.UI.setAttributes(self.color .. " Target " .. color, { active = false, isOn = false })
+         end
+      end
+
+      Global.UI.setAttributes(self.color..' Hack Target', { active = true })
+   end
+end
+function Bioterrorist:onMissionResults(onTeam, playedCards, missionResult)
+   if onTeam then
+      local trg = self.target
+      local c = math.random(10)
+
+      while trg == nil do
+         for color, data in pairs(ActivePlayers) do
+            if SelectedTeam[color] then
+               c = c - 1
+               if c == 0 then
+                  self.target = color
+               end
+            end
+         end
+      end
+
+      self.infected[trg] = true
+      Global.UI.setAttributes(self.color..' Hack Target', { active = false })
+   end
+
+   local possibleInfections = {}
+   for color, data in pairs(ActivePlayers) do
+      if SelectedTeam[color] then
+         table.insert(possibleInfections, color)
+      end
+   end
+
+   local newInfect = {}
+   for color, data in pairs(ActivePlayers) do
+      if self.infected[color] and SelectedTeam[color] then
+         local p = possibleInfections[math.random(#possibleInfections)]
+         local cnt = 0
+         while cnt < 6 and (color == p or self.infected[p]) do
+            p = possibleInfections[math.random(#possibleInfections)]
+            cnt = cnt + 1
+         end
+         table.insert(newInfect, p)
+      end
+   end
+
+   for _, clr in pairs(newInfect) do
+      self.infected[clr] = true
+   end
+
+   for color, data in pairs(ActivePlayers) do
+      if self.infected[color] and SelectedTeam[color] then
+         playedCards[color] = "Infected"
+      end
+   end
+
+   return playedCards, missionResult
+end
+
+Mole = Spy:new()
+function Mole:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Mole"
+   self.info = "You are a Mole with the Spies"
+   self.cards = { "Fail", "Sabotage" }
+   self.images = { "Mole 1" }
+   return o
+end
+function Mole:onMissionResults(onTeam, playedCards, missionResult)
+   if self.player.playedMissionCard ~= "Sabotage" then return playedCards, missionResult end
+   return playedCards, "Sabotage"
+end
+
+SpyRogue = Spy:new()
+function SpyRogue:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Rogue Spy"
+   self.info = "You are a Rogue Spy and don't know the other Spies!"
+   self.cards = { "Success", "Fail" }
+   self.images = { "Spy Rogue 1" }
+   self.winReq = 0
+   return o
+end
+function SpyRogue:onAssignment(color)
+   self.color = color
+   self.player = ActivePlayers[color]
+   self.image = table.remove(self.images, math.random(#self.images))
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = color .. "|Black"
+   })
+
+   table.insert(GameListeners['Pre-State Change'], self)
+   return true
+end
+function SpyRogue:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+function SpyRogue:onMissionFail(onTeam)
+   if onTeam and self.player.playedMissionCard == "Fail" then
+      self.winReq = self.winReq + 1
+   end
+end
+function SpyRogue:onGamePreStateChange(state)
+   if state == "Game Over" and self.winReq >= 2 and GameData["Mission Results"].FailCount == 3 and SelectedTeam[self.color] and self.player.playedMissionCard == "Fail" then
+      broadcastToAll("The Spy Rogue has successfully completed their Mission and won!", {0.5, 1, 0})
+      SpecialWinner = "Rogue Spy"
+      return "Solo Win"
+   end
+
+   return state
+end
+
+SpyDefector = Spy:new()
+function SpyDefector:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Spy Defector"
+   self.info = "You are a Defector currently allied with the Spies!"
+   self.cards = { "Success", "Fail" }
+   self.images = { "Spy Defector 1" }
+   return o
+end
+function SpyDefector:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   if GameOptions["Know Defectors"] then
+      local other = FindPlayerByRole("Resistance Defector")
+      self.info = self.info .. " The other Defector is " .. getPlayerTextColor(other)
+   end
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo})
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+function SpyDefector:onBeginMission(onTeam)
+   self.player.playedMissionCard = nil
+
+   if onTeam then
+      self.player.placard.highlightOn({1, 0, 0})
+      self.player.frame.highlightOn({1, 0, 0})
+      Global.UI.setAttributes(self.color..' Mission Cards', { active = true })
+
+      for _, card in pairs(self.cards) do
+         Global.UI.setAttributes(self.color .. " " .. card, { isOn = false, active = true })
+      end
+
+      if self.team ~= "Spy" then
+         Global.UI.setAttributes(self.color .. " Fail", { active = false })
+      end
+   end
+end
+
+SpyChief = Spy:new()
+function SpyChief:new(o)
+   o = o or Resistance:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Spy Chief"
+   self.info = "You are a Chief for the Resistance!"
+   self.images = { 'Spy Chief 1', 'Spy Chief 2' }
+   self.investigated = false
+   return o
+end
+function SpyChief:onAssignment(color)
+   self.color = color
+   self.player = ActivePlayers[color]
+   self.image = table.remove(self.images, math.random(#self.images))
+   self.player.placard.UI.setAttributes("Role Image", {
+      active = true,
+      image = self.image,
+      visibility = color .. "|Black"
+   })
+
+   if GameData["Active Player Count"] >= 7 then
+      self.cards = { "Success", "Chief Fail" }
+   else
+      self.cards = { "Success", "Fail" }
+   end
+
+   BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"] = { player = "", onCheck = function(teamSelected)
+   if teamSelected then
+      for color, data in pairs(ActivePlayers) do
+         if color ~= GameData["Current Leader"] and not SelectedTeam[color] and color ~= BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player then
+            data.placard.UI.setAttributes("Team Token", { color = "#707070", image = "Investigator Token", onClick = "Global/SelectInvestigator(" .. color .. ")" })
+         end
+      end
+   else
+      for color, data in pairs(ActivePlayers) do
+         if SelectedTeam[color] then
+            data.placard.UI.setAttributes("Team Token", { color = "#FFFFFF", onClick = "Global/onTeamTokenClick(" .. color .. ")" })
+         else
+            data.placard.UI.setAttributes("Team Token", { color = "#707070", onClick = "Global/onTeamTokenClick(" .. color .. ")" })
+         end
+      end
+   end
+   end }
+   table.insert(GameListeners['Pre-State Change'], self)
+   return true
+end
+function SpyChief:onMissionSuccess(onTeam)
+   BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player = GameData["Current Leader"]
+end
+function SpyChief:onGamePreStateChange(state)
+   if state == "Selecting Team" then
+      BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player = ""
+   elseif state == "Mission End" and not self.investigated and GameData["Mission Results"].FailCount ~= 3 and GameData["Mission Results"].SuccessCount ~= 3 then
+      broadcastToAll("The Investigator must choose a player to investigate", {1, 1, 0})
+
+      local invest = BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player
+      for color, data in pairs(ActivePlayers) do
+         if color ~= invest then
+            data.placard.UI.setAttributes("Team Token", { active = true, image = "Select Token", color = "#FFFFFF", onClick = "Global/onTeamTokenClick("..color..")" })
+         else
+            data.placard.UI.setAttributes("Team Token", { active = false })
+         end
+      end
+      self.investigated = true
+      return "Investigator"
+   end
+   return state
+end
+function SpyChief:onBeginMission(onTeam)
+   self.investigated = false
+   self.player.playedMissionCard = nil
+   local hunter = FindPlayerByRole("Spy Hunter")
+   Global.UI.setAttributes(hunter .. " Ability Button", { active = false })
+
+   if onTeam then
+      self.player.placard.highlightOn({1, 0, 0})
+      self.player.frame.highlightOn({1, 0, 0})
+      Global.UI.setAttributes(self.color..' Mission Cards', { active = true })
+
+      for _, card in pairs(self.cards) do
+         Global.UI.setAttributes(self.color .. " " .. card, { isOn = false, active = false })
+         if self.cardLimit[card] == nil or self.cardLimit[card] > 0 then
+            Global.UI.setAttributes(self.color .. " " .. card, { active = true })
+         end
+      end
+   end
+end
+function SpyChief:onMissionFail(onTeam)
+   if onTeam and (self.player.playedMissionCard == "Fail" or self.player.playedMissionCard == "Chief Fail") then
+      local hunter = FindPlayerByRole("Spy Hunter")
+      if not ActivePlayers[hunter].role.active then
+         Global.UI.setAttributes(hunter .. " Ability Button", { active = true })
+      end
+   end
+end
+
+SpyHunter = Spy:new()
+function SpyHunter:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Spy Hunter"
+   self.info = "You are a Spy Hunter"
+   self.images = { 'Spy Hunter 1' }
+   self.correctGuess = false
+   self.active = false
+
+   table.insert(GameListeners['Priority-State Change'], self)
+
+   return o
+end
+function SpyHunter:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local allyList = ""
+   for color, data in pairs(ActivePlayers) do
+      if color ~= self.color and data.role.team == "Spy" then
+         if data.role.name == "Blind Spy" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Rogue" then
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+         elseif data.role.name == "Spy Defector" or data.role.name == "Resistance Defector" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEFECTOR] </textcolor>" .. getPlayerTextColor(color)
+         elseif data.role.name == "Deep Agent" then
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+         else
+            data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+            allyList = allyList .. "<br/>" .. getPlayerTextColor(color)
+         end
+      elseif data.role.name == "Pretender" then
+         data.placard.UI.setAttributes("Outer Role Image "..self.color, { active = true, image = "Unknown Spy" })
+         allyList = allyList .. "<br/><textcolor color=\"#FF6363\">[DEEP AGENT] </textcolor>" .. getPlayerTextColor(color)
+      end
+   end
+   if ActiveOptions["Blind Mode"] ~= nil or allyList == "" then
+      allyList = "<br/><textcolor color=\"#FF6363\">[UNKNOWN]</textcolor>"
+   end
+   self.info = "You are a " .. self.name .. "\nYour ally spies are:"..allyList
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local activateButton = CreateUiTable("Button", { id = self.color .. " Ability Button", active = false, width = 300, height = 50, rectAlignment = "LowerCenter", resizeTextForBestFit = true, text = "Accuse", onClick = "onAbilityClick(Hunter)" })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo, activateButton})
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel})
+end
+function SpyHunter:onGamePriorityStateChange(state)
+   if state == "Game Over" and GameData["Mission Results"].FailCount == 3 and not self.correctGuess then
+      -- Do hunter stuffs
+      for color, data in pairs(ActivePlayers) do
+         data.placard.UI.setAttributes("Team Token", { active = true, image = 'Assassin Token', color = "#FFFFFF", onClick = "Global/onTeamTokenClick("..color..")" })
+
+         if data.role.name == "Spy Hunter" then
+            data.placard.UI.setAttributes("Team Token", { active = false })
+            data.placard.UI.setAttributes("Public Role Image", { active = true, image = "Spy Hunter 1" })
+         end
+      end
+      return "Spy Hunter Guess"
+   end
+
+   return state
+end
+
+SpyClone = Spy:new()
+function SpyClone:new(o)
+   o = o or Spy:new(o)
+   setmetatable(o, self)
+   self.__index = self
+   self.name = "Clone"
+   self.info = "You are a Clone! After round 2 you'll attempt to clone someone"
+   self.cards = { "Success", "Fail", "Extract", "Chief Fail", "Hit", "Cure", "Sabotage", "Reverse Card", "Rogue Success Card", "Witness White", "Witness Brown", "Witness Red", "Witness Orange", "Witness Yellow", "Witness Green", "Witness Teal", "Witness Blue", "Witness Purple", "Witness Pink" }
+   self.images = { 'Clone 1' }
+   return o
+end
+function SpyClone:onUI()
+   local cardsUI = {}
+   for _, card in pairs(self.cards) do
+      local cardUI = CreateUiTable("ToggleButton", {
+         active = false,
+         id = self.color .. " " .. card,
+         onClick = 'onMissionCardClick('..card..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = card .. " Card",
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(cardsUI, cardUI)
+   end
+   local missionPanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 800, height = 300 }, cardsUI)
+   local missionGroup = CreateUiTable("ToggleGroup", { id = self.color..' Mission Cards', active = false, allowSwitchOff = true }, { missionPanel })
+
+   local roleInfo = CreateUiText(self.info, { id = self.color .. " Role Info", color = "#FFFFFF", alignment = "UpperCenter", resizeTextForBestFit = true })
+   local activateButton = CreateUiTable("Button", { active = false, id = self.color .. " Ability Button", width = 300, height = 50, rectAlignment = "LowerCenter", resizeTextForBestFit = true, text = "Reveal Self", onClick = "onAbilityClick(Mayor)" })
+   local rolePanel = CreateUiTable("Panel", { color = "#FFFFFF00", width = 420, height = 200, offsetXY = '75 -10', rectAlignment = "UpperLeft" }, {roleInfo, activateButton})
+
+   local targetButtons = {}
+   for clr, data in pairs(ActivePlayers) do
+      local trgBut = CreateUiTable("ToggleButton", {
+         id = self.color .. " Target " .. clr,
+         onClick = 'onTargetClick('..clr..')',
+         colors = '#FFFFFF|#AAAAAA|#888888|#111111',
+         image = "Select " .. clr,
+         preferredWidth = 200,
+         preserveAspect = true
+      })
+      table.insert(targetButtons, trgBut)
+   end
+   local selectTarget = CreateUiTable("HorizontalLayout", { active = false, id = self.color..' Hack Target', spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 300', width = 800, height = 50 }, targetButtons)
+
+   return CreateUiTable("Panel", {}, {missionGroup, rolePanel, selectTarget})
+end
+function SpyClone:onBeginMission(onTeam)
+   self.player.playedMissionCard = nil
+
+   if onTeam then
+      self.player.placard.highlightOn({1, 0, 0})
+      self.player.frame.highlightOn({1, 0, 0})
+      Global.UI.setAttributes(self.color..' Mission Cards', { active = true })
+
+      for _, card in pairs({"Success", "Fail"}) do
+         Global.UI.setAttributes(self.color .. " " .. card, { isOn = false, active = true })
+      end
+   end
+end

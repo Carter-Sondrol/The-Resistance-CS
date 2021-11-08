@@ -1,0 +1,25 @@
+SavedGUIDs = {
+    ['White Placard'] = "bc9755",
+    ['Brown Placard'] = "15f513",
+    ['Red Placard'] = "246ecf",
+    ['Orange Placard'] = "f1f3b7",
+    ['Yellow Placard'] = "f8e8b6",
+    ['Green Placard'] = "a329c8",
+    ['Teal Placard'] = "a3f6b3",
+    ['Blue Placard'] = "75225a",
+    ['Purple Placard'] = "8c98ce",
+    ['Pink Placard'] = "73b663",
+
+    ['White Frame'] = "7f6197",
+    ['Brown Frame'] = "2b2ec4",
+    ['Red Frame'] = "ca80e3",
+    ['Orange Frame'] = "b14953",
+    ['Yellow Frame'] = "0de4b7",
+    ['Green Frame'] = "87f7db",
+    ['Teal Frame'] = "871c40",
+    ['Blue Frame'] = "19fa07",
+    ['Purple Frame'] = "ad320b",
+    ['Pink Frame'] = "4a64a9"
+}
+
+MainBoardGUID = "18eb21"

@@ -1,0 +1,233 @@
+function filterSphereCast(func, pos, debug)
+   local items = Physics.cast({
+      origin = pos,
+      direction = vector(0, 1, 0),
+      type = 2,
+      size = vector(0.5, 0.5, 0.5),
+      max_distance = 0.1,
+      debug = debug or false
+   }) -- returns {{Vector point, Vector normal, float distance, Object hit_object}, ...}
+
+   local valid = {}
+   for _, i in pairs(items) do
+      if func(i.hit_object) then
+         table.insert(valid, i)
+      end
+   end
+   return valid
+end
+
+function table_to_string(tbl, tabs)
+   local result = "{"
+   tabs = tabs or 0
+
+   local tab = '\n'
+   for i = 0, tabs do
+      tab = tab .. ''
+   end
+
+   if tabs > 0 then
+      tab = ''
+   end
+
+   for k, v in pairs(tbl) do
+      -- Check the key type (ignore any numerical keys - assume its an array)
+      if type(k) == "string" then
+         result = result..tab .. "[\""..k.."\"]".."="
+      elseif type(k) == "number" then
+         result = result..tab .. "["..k.."]".."="
+      end
+
+      -- Check the value type
+      if type(v) == "table" then
+         result = result..table_to_string(v, tabs + 1)
+      elseif type(v) == "boolean" then
+         result = result..tostring(v)
+      else
+         result = result.."\""..v.."\""
+      end
+      result = result..", "
+   end
+
+   -- Remove leading commas from the result
+   if result ~= "" then
+      result = result:sub(1, result:len() - 1)
+   end
+
+   return result.."}"
+end
+
+function randomTableEntry(tbl)
+   local tableCount = 0
+
+   for _, _ in pairs(tbl) do
+      tableCount = tableCount + 1
+   end
+
+   local random = math.random(tableCount)
+   tableCount = 1
+   for k, v in pairs(tbl) do
+      if random == tableCount then
+         return v, k
+      end
+      tableCount = tableCount + 1
+   end
+
+   return nil, - 1
+end
+
+function deepcopy(orig, copies)
+   copies = copies or {}
+   local orig_type = type(orig)
+   local copy
+   if orig_type == 'table' then
+      if copies[orig] then
+         copy = copies[orig]
+      else
+         copy = {}
+         copies[orig] = copy
+         for orig_key, orig_value in next, orig, nil do
+            copy[deepcopy(orig_key, copies)] = deepcopy(orig_value, copies)
+         end
+         setmetatable(copy, deepcopy(getmetatable(orig), copies))
+      end
+   else -- number, string, boolean, etc
+      copy = orig
+   end
+   return copy
+end
+
+function prepare_savedata(tbl)
+   local outdata = {}
+   for k, v in pairs(tbl) do
+      if type(k) == "number" then
+         k = "Number"..tostring(k)
+      end
+
+      if type(v) == 'table' then
+         outdata[k] = prepare_savedata(v)
+      elseif type(v) == 'userdata' then
+         outdata[k] = v.getGUID() .. "obj_GUIDconverted"
+      else
+         outdata[k] = v
+      end
+   end
+   return outdata
+end
+
+function load_savedata(tbl)
+   local outdata = {}
+   for k, v in pairs(tbl) do
+      if string.match(k, "Number") then
+         k = string.gsub(k, "Number", '')
+         k = tonumber(k)
+      end
+
+      if type(v) == 'table' then
+         outdata[k] = load_savedata(v)
+      elseif type(v) == 'string' and string.match(v, 'obj_GUIDconverted') then
+         string.sub(v, 1, 6)
+         outdata[k] = getObjectFromGUID(string.sub(v, 1, 6))
+      else
+         outdata[k] = v
+      end
+   end
+   return outdata
+end
+
+function CreateList()
+   return {first = 0, last = -1}
+end
+
+function ListAddToStart(list, value)
+   local first = list.first - 1
+   list.first = first
+   list[first] = value
+end
+
+function ListAddToEnd(list, value)
+   local last = list.last + 1
+   list.last = last
+   list[last] = value
+end
+
+function PopStart (list)
+   local first = list.first
+   if first > list.last then error("list is empty") end
+   local value = list[first]
+   list[first] = nil-- to allow garbage collection
+   list.first = first + 1
+   return value
+end
+
+function PopEnd (list)
+   local last = list.last
+   if list.first > last then error("list is empty") end
+   local value = list[last]
+   list[last] = nil -- to allow garbage collection
+   list.last = last - 1
+   return value
+end
+
+function Split(str, delimiter)
+   log(str)
+   log(delimiter)
+
+   local result = {}
+   for match in string.gmatch((str..delimiter), "(.-)"..delimiter) do
+      table.insert(result, match)
+   end
+   return result
+end
+
+function Shuffle(tabl)
+   local tbl = {}
+   for _, d in pairs(tabl) do
+      table.insert(tbl, d)
+   end
+
+   local c = #tbl
+   for i = 1, c do
+      local index = math.random(1, c)
+      tbl[index], tbl[i] = tbl[i], tbl[index]
+   end
+   return tbl
+end
+
+function CreateUiTable(tag, attributes, children)
+   return { tag = tag, attributes = attributes, children = children }
+end
+
+function CreateUiText(text, attributes)
+   local textInfo = CreateUiTable("Text", attributes)
+   textInfo.value = text;
+   return textInfo
+end
+
+function getPlayerHexCode( color )
+   local order = {
+      ['White'] = 'FFFFFF',
+      ['Brown'] = '703A16',
+      ['Red'] = 'DA1917',
+      ['Orange'] = 'F3631C',
+      ['Yellow'] = 'E6E42B',
+      ['Green'] = '30B22A',
+      ['Teal'] = '20B09A',
+      ['Blue'] = '1E87FF',
+      ['Purple'] = '9F1FEF',
+      ['Pink'] = 'F46FCD'
+   }
+
+   return order[color]
+end
+function getPlayerTextColor( color )
+   return '<textcolor color="#' .. getPlayerHexCode(color) .. '">'.. (Player[color].steam_name or color) ..'</textcolor>'
+end
+
+function safeBroadcastToColor(message, player, color)
+   if Player[player].seated then
+      broadcastToColor(message, player, color)
+   else
+      log("To " .. player .. ": " .. message)
+   end
+end

@@ -1,0 +1,1932 @@
+local debug = false
+
+-- Called upon loading the game
+function onLoad(save_state)
+   local saveData = load_savedata(JSON.decode(save_state))
+   if false then --saveData ~= nil then
+      if saveData.game_state ~= "Waiting" then
+         GameState = saveData.game_state
+         PlayerList = saveData.player_list
+         GameOptions = saveData.game_options
+         SelectedTeam = saveData.selected_team
+         GameData = saveData.game_data
+
+         for color, data in pairs(aveData.active_players) do
+            ActivePlayers[color] = {}
+            ActivePlayers[color].playerColor = color
+            ActivePlayers[color].previousPlayer = data.previousPlayer
+            ActivePlayers[color].nextPlayer = data.nextPlayer
+            ActivePlayers[color].placard = data.placard
+            ActivePlayers[color].role = RolesOnLoad[data.role_data.name]
+            ActivePlayers[color].role:onLoad(data.role_data)
+         end
+         for optName, data in pairs(saveData.option_data) do
+            OptionOnLoad[optName]:onLoad(data)
+         end
+      end
+   else
+      GameState = "Waiting"
+      PlayerList = {}
+      ActivePlayers = {}
+      SelectedTeam = {}
+
+      SelectedTeamCount = 0
+      MissionCount = -1
+      playerIndex = nil
+
+      for role, _ in pairs(roleCards) do
+         CreateRoleSelectButtons(role)
+      end
+
+      for option, _ in pairs(optionCards) do
+         CreateOptionSelectButtons(option)
+      end
+
+      local data = {click_function = "StartButton", function_owner = self, label = "Start", position = {0, 0.8, 0}, rotation = {0, 180, 0}, scale = {0.7, 0.7, 0.7}, width = 1000, height = 400, font_size = 400}
+      getObjectFromGUID("4cbdcc").createButton(data)
+
+      data = {click_function = "TriggerRandomRoleSelect", function_owner = self, label = "Randomize", position = {0, 0.8, 2}, rotation = {0, 180, 0}, scale = {0.7, 0.7, 0.7}, width = 3000, height = 400, font_size = 400}
+      getObjectFromGUID("2dbd19").createButton(data)
+   end
+end
+
+function TriggerRandomRoleSelect()
+   SelectRandomRoles(true)
+end
+function QuickRandomStart()
+   InvalidRandomRoles = {}
+   TempSelectedRoles = {}
+
+   for role, selected in pairs(SelectedRoles) do
+      InvalidRandomRoles[role] = selected
+   end
+
+   SelectedRoles = {}
+
+   SelectRandomRoles(false)
+end
+
+function toggleRandomRoles(color, bool, id)
+   if not color.admin then return end
+
+   if bool == "True" then
+      bool = true
+   elseif bool == "False" then
+      bool = false
+   end
+   GameOptions["Random Roles"] = bool
+
+   for role, selected in pairs(SelectedRoles) do
+      if selected then
+         if GameOptions["Random Roles"] then
+            getObjectFromGUID(roleCards[role].guid).highlightOn({1, 0, 0})
+         else
+            getObjectFromGUID(roleCards[role].guid).highlightOn({0, 1, 0})
+         end
+      end
+   end
+end
+
+function onSave()
+   local saveData = {
+      game_state = GameState,
+      player_list = PlayerList,
+      game_options = GameOptions,
+      selected_team = SelectedTeam,
+      game_data = GameData,
+      active_players = { },
+   }
+
+   for clr, data in pairs(ActivePlayers) do
+      saveData["active_players"][clr] = {
+         playerColor = clr,
+         previousPlayer = data.previousPlayer,
+         nextPlayer = data.nextPlayer,
+         placard = data.placard,
+         role_data = data.role:onSave()
+      }
+   end
+
+   local optionData = {}
+   for i, option in pairs( GameListeners['On Save'] ) do
+      optionData[option.name] = option:onSave()
+   end
+   saveData["option_data"] = optionData
+
+   return JSON.encode(prepare_savedata(saveData))
+end
+
+function onChat(message, player)
+   if player.admin then
+      if message == "!start" then
+         StartButton(nil, player.color)
+      elseif message == "!random" then
+         SelectRandomRoles(true)
+      elseif message == "!approve" and debug then
+         for clr, data in pairs(ActivePlayers) do
+            onVoteCardClick({color = clr}, "Approve")
+         end
+      elseif message == "!reject" and debug then
+         for clr, data in pairs(ActivePlayers) do
+            onVoteCardClick({color = clr}, "Reject")
+         end
+      elseif message == "!team" and debug then
+         for clr, data in pairs(ActivePlayers) do
+            onVoteCardClick({color = clr}, "Reject")
+         end
+      end
+   end
+end
+
+function StartButton(obj, clr, bool)
+   if not Player[clr].admin then return end
+
+   local unorderedPlayerList = getSeatedPlayers()
+   local orderedList = { ["White"] = false, ["Brown"] = false, ["Red"] = false, ["Orange"] = false, ["Yellow"] = false, ["Green"] = false, ["Teal"] = false, ["Blue"] = false, ["Purple"] = false, ["Pink"] = false }
+   if debug then
+      orderedList["White"] = true
+      orderedList["Red"] = true
+      orderedList["Orange"] = true
+      orderedList["Yellow"] = true
+      orderedList["Teal"] = true
+      orderedList["Blue"] = true
+      orderedList["Pink"] = true
+   end
+   for _, color in pairs(unorderedPlayerList) do
+      orderedList[color] = true
+   end
+
+   PlayerList = {}
+   for color, seated in pairs(orderedList) do
+      if seated then
+         table.insert(PlayerList, color)
+      end
+   end
+
+   if #PlayerList < 5 then
+      broadcastToAll("You need at least 5 players to begin", {1, 0, 0})
+      return
+   end
+
+   if GameOptions["Random Roles"] then
+      QuickRandomStart()
+   end
+
+   local i = 0
+   while not BeginGame(GameOptions["Random Roles"]) and i < 50 do
+      i = i + 1
+   end
+   if i >= 50 then
+      broadcastToColor("Couldn't start with the current roles", clr, {1, 0, 0})
+      getObjectFromGUID("4cbdcc").clearButtons()
+   end
+end
+
+LeaderSelectLimit = 0
+IncompatPlayers = {}
+PermPlayers = {}
+KeepTeamToken = {}
+
+function BeginTeamSelect()
+   SelectedTeamCount = 0
+   MissionCount = PlayerCountData[GameData["Active Player Count"]].missions[GameData["Current Mission"]]
+
+   if not UpdateGameState("Selecting Team") then return end
+
+   IncompatPlayers = {}
+   LeaderSelectLimit = MissionCount
+
+   for i = 1, 5 do
+      getObjectFromGUID(MainBoardGUID).UI.setAttributes('Round Marker '..i, { active = false })
+   end
+   getObjectFromGUID(MainBoardGUID).UI.setAttributes('Round Marker '..GameData["Current Mission"], { active = true })
+
+   for i = 1, 5 do
+      getObjectFromGUID(MainBoardGUID).UI.setAttributes('Vote Track '..i, { active = false })
+   end
+   getObjectFromGUID(MainBoardGUID).UI.setAttributes('Vote Track '..((GameData['Vote Rejects'] or 0) + 1), { active = true })
+
+   for color, data in pairs(ActivePlayers) do
+      SelectedTeam[color] = false
+      KeepTeamToken[color] = false
+      data.placard.UI.setAttributes("Team Token", {
+         active = true,
+         color = "#707070",
+         image = "Team Token " .. math.random(5),
+         onClick = "Global/onTeamTokenClick("..color..")"
+      })
+   end
+end
+
+GameOptions = {
+   ["Know Defectors"] = true,
+   ["Public Defectors"] = true,
+   ["Random Roles"] = false
+}
+
+RolesOnLoad = {
+   ['Resistance'] = Resistance,
+   ['Spy'] = Spy,
+}
+SelectedRoles = {}
+SelectedOptions = {}
+AllColors = { "White", "Brown", "Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Purple", "Pink" }
+
+ActiveRoles = {}
+
+function ResetPlacardUI(placard)
+   placard.UI.setAttributes("Role Image", { active = false })
+   placard.UI.setAttributes("Leader Token", { active = false })
+   placard.UI.setAttributes("Bonus Leader Token", { active = false })
+   placard.UI.setAttributes("Team Token", { active = false })
+   placard.UI.setAttributes("Team Token Label", { active = false })
+   placard.UI.setAttributes("Vote Token", { active = false })
+   placard.UI.setAttributes("Public Role Image", { active = false, scale = "1 2", position = "0 250 -400" })
+   placard.UI.setAttributes("Inquisitor Image", { active = false })
+
+   placard.UI.setAttributes("Outer Role Image White", { active = false })
+   placard.UI.setAttributes("Outer Role Image White", { active = false })
+   placard.UI.setAttributes("Outer Role Image Brown", { active = false })
+   placard.UI.setAttributes("Outer Role Image Red", { active = false })
+   placard.UI.setAttributes("Outer Role Image Orange", { active = false })
+   placard.UI.setAttributes("Outer Role Image Yellow", { active = false })
+   placard.UI.setAttributes("Outer Role Image Green", { active = false })
+   placard.UI.setAttributes("Outer Role Image Teal", { active = false })
+   placard.UI.setAttributes("Outer Role Image Blue", { active = false })
+   placard.UI.setAttributes("Outer Role Image Purple", { active = false })
+   placard.UI.setAttributes("Outer Role Image Pink", { active = false })
+end
+
+function BeginGame(isRetry)
+   GameData = { }
+   GameData["Active Player Count"] = #PlayerList
+   ActivePlayers = {}
+   ActiveRoles = {}
+   ActiveOptions = {}
+
+   local hasAmnesiac = false
+
+   for role, selected in pairs(SelectedRoles) do
+      if selected and role ~= "Amnesiac" then
+         table.insert(ActiveRoles, roleCards[role].class:new())
+
+         if GameData["Active Player Count"] >= 8 and role == "Resistance Chief" then
+            table.insert(ActiveRoles, roleCards[role].class:new())
+         end
+         if GameData["Active Player Count"] >= 10 and role == "Spy Chief" then
+            table.insert(ActiveRoles, roleCards[role].class:new())
+         end
+      elseif selected then
+         hasAmnesiac = true
+      end
+   end
+
+   for option, selected in pairs(SelectedOptions) do
+      if selected then
+         ActiveOptions[option] = optionCards[option].class:new()
+      end
+   end
+
+   local spyCount = PlayerCountData[GameData["Active Player Count"]].spyCount
+   local neutralCounts = 0
+   for i, data in pairs(ActiveRoles) do
+      if data.team == "Spy" then
+         spyCount = spyCount - 1
+      elseif data.team == "Null" then
+         neutralCounts = neutralCounts + 1
+      end
+   end
+
+   spyCount = spyCount - (neutralCounts / 2)
+
+   for i = 1, spyCount do table.insert(ActiveRoles, Spy:new()) end
+   for i = #ActiveRoles, GameData["Active Player Count"] - 1 do table.insert(ActiveRoles, Resistance:new()) end
+
+   local roleCountOffset = 0
+   if hasAmnesiac then
+      local amneData = roleCards["Amnesiac"].class:new()
+
+      local compatNum = -1
+      local canBeRes = false
+      local canBeSpy = false
+      for i, role in pairs(ActiveRoles) do
+         if amneData.compatableRoles[role.name] ~= nil then
+            compatNum = i
+            if role.team == "Spy" then
+               canBeSpy = true
+            else
+               canBeRes = true
+            end
+         end
+      end
+
+      if compatNum == -1 and not isRetry then
+         broadcastToAll("There are no roles compatible with the Amnesiac in this game. Select different roles or add more players before starting a game", {1, 0, 0})
+         return
+      end
+      if canBeRes ~= canBeSpy and not isRetry then
+         broadcastToAll("Amnesiac is only compatible with " .. (canBeRes and "Resistance" or "Spy") .. " roles. Select different roles or add more players before starting a game", {1, 0, 0})
+         return
+      end
+
+      local r = table.remove(ActiveRoles, compatNum)
+      table.insert(ActiveRoles, amneData)
+      table.insert(ActiveRoles, r)
+
+      roleCountOffset = 1
+   end
+
+   local playerUI = {}
+   local lastColor = nil
+   local firstColor = nil
+   for i, color in pairs(PlayerList) do
+      Player[color].team = "None"
+      ActivePlayers[color] = {}
+      ActivePlayers[color].playerColor = color
+      ActivePlayers[color].previousPlayer = PlayerList[i - 1] or PlayerList[#PlayerList]
+      ActivePlayers[color].nextPlayer = PlayerList[i + 1] or PlayerList[1]
+
+      ResetPlacardUI(getObjectFromGUID(SavedGUIDs[color.." Placard"]))
+
+      ActivePlayers[color].placard = getObjectFromGUID(SavedGUIDs[color.." Placard"])
+      ActivePlayers[color].frame = getObjectFromGUID(SavedGUIDs[color.." Frame"])
+
+      ActivePlayers[color].role = table.remove(ActiveRoles, math.random(#ActiveRoles - roleCountOffset))
+      if ActivePlayers[color].role == nil then
+         return BeginGame()
+      end
+
+      if not ActivePlayers[color].role:onAssignment(color) then
+         return BeginGame()
+      end
+
+      if ActivePlayers[color].role.isAmnesiac then
+         roleCountOffset = 0
+      end
+
+      ActivePlayers[color].placard.highlightOff()
+   end
+
+   if #ActiveRoles ~= 0 then
+      return BeginGame()
+   end
+
+   for _, clr in pairs(AllColors) do
+      if ActivePlayers[clr] == nil then
+         getObjectFromGUID(SavedGUIDs[clr .. " Placard"]).setInvisibleTo(AllColors)
+      else
+         getObjectFromGUID(SavedGUIDs[clr .. " Placard"]).setInvisibleTo({})
+      end
+   end
+
+   for color, data in pairs(ActivePlayers) do
+      table.insert(playerUI, CreateUiPlayer(color))
+   end
+
+   for _, option in pairs(ActiveOptions) do
+      option:initalize()
+   end
+
+   local dialogBoxText = CreateUiTable("Text", { id = "Dialogue Box Text", resizeTextForBestFit = true })
+   local dialogBoxButton = CreateUiTable("Button", { id = "Dialogue Box Button", text = 'Propose Team', preferredHeight = 50, resizeTextForBestFit = true })
+   local dialogBoxBonusButton = CreateUiTable("Button", { active = false, id = "Dialogue Box Bonus Button", text = '', preferredHeight = 50, resizeTextForBestFit = true })
+   local dialogBox = CreateUiTable("VerticalLayout", { active = false, id = "Dialogue Box", padding = '10 10 10 10', spacing = 5, color = "#CACACA", childAlignment = 'UpperCenter', rectAlignment = 'UpperCenter', width = 400, height = 200, offsetXY = '0 -100', allowDragging = true, returnToOriginalPositionWhenReleased = false }, {dialogBoxText, dialogBoxButton, dialogBoxBonusButton})
+
+   GameData["Current Mission"] = 1
+   GameData["Completed Missions"] = 0
+   GameData["Mission Results"] = { FailCount = 0, SuccessCount = 0 }
+
+   table.insert(playerUI, dialogBox)
+   table.insert(playerUI, CreateMissionLog())
+   table.insert(playerUI, CreateUiTable("Button", { id = "Toggle Notes", text = ' ', color = "#FFFFFF00", tooltip = "Toggle Notes", height = 100, width = 100, rectAlignment = "LowerRight", onClick = "ToggleShownVotes(Notes)", resizeTextForBestFit = true }))
+
+   local tbl = {CreateUiTable("Panel", {}, playerUI)}
+   Global.UI.setXmlTable(tbl)
+
+   getObjectFromGUID(MainBoardGUID).setCustomObject({ image = PlayerCountData[GameData["Active Player Count"]].board })
+   getObjectFromGUID(MainBoardGUID).reload()
+
+   Wait.condition(function()
+   Wait.frames(function()
+   loadBoardUi(getObjectFromGUID(MainBoardGUID))
+   Wait.frames(function()
+   SelectLeader()
+   end, 40)
+   end, 40)
+
+   end, function() return not getObjectFromGUID(MainBoardGUID).loading_custom end )
+   return true
+end
+
+function DebugTable(tbl, tabs)
+   local tabs = tabs or 0
+   local str = ""
+   for _, data in pairs(tbl) do
+      for i = 0, tabs do
+         str = str .. " "
+      end
+      str = str .. "<" .. data.tag
+
+      if data.attributes ~= nil then
+         for n, v in pairs(data.attributes) do
+            str = str .. " " .. n .. "=\"" .. tostring(v) .. "\""
+         end
+      end
+
+
+      if data.children ~= nil then
+         str = str .. ">\n"
+
+         str = str .. DebugTable(data.children, tabs + 1)
+
+         for i = 0, tabs do
+            str = str .. " "
+         end
+         str = str .. "</" .. data.tag .. ">\n"
+      else
+         str = str .. "/>\n"
+      end
+   end
+   return str
+end
+
+function RandomPlayer()
+   return PlayerList[math.random(#PlayerList)]
+end
+
+function FindPlayerByRole(roleName, exception)
+   for clr, data in pairs(ActivePlayers) do
+      if clr ~= exception and data.role.name == roleName then
+         return clr
+      end
+   end
+   return nil
+end
+debugCount = 0
+function SelectLeader()
+   if GameData["Current Leader"] == nil then
+      GameData["Current Leader"] = RandomPlayer()
+   else
+      ActivePlayers[GameData["Current Leader"]].placard.UI.setAttributes("Leader Token", { active = false })
+      GameData["Current Leader"] = ActivePlayers[GameData["Current Leader"]].nextPlayer
+   end
+
+   ActivePlayers[GameData["Current Leader"]].placard.UI.setAttributes("Leader Token", { active = true, image = "Leader Token", color = "#FFFFFF", onClick = "" })
+   UpdateGameState("Leader Ready")
+end
+
+function CreateUiPlayer(player_color)
+   local role = ActivePlayers[player_color].role
+   local roleUi = role:onUI()
+
+   local approveVote = CreateUiTable("ToggleButton", { id = player_color..' Approve', onClick = 'onVoteCardClick(Approve)', colors = '#FFFFFF|#AAAAAA|#888888|#111111', image = 'Approve Card', preferredWidth = 160, preserveAspect = true })
+   local rejectVote = CreateUiTable("ToggleButton", { id = player_color..' Reject', onClick = 'onVoteCardClick(Reject)', colors = '#FFFFFF|#AAAAAA|#888888|#111111', image = 'Reject Card', preferredWidth = 160, preserveAspect = true })
+   local votePanel = CreateUiTable("HorizontalLayout", { spacing = 10, rectAlignment = 'LowerCenter', childAlignment = 'UpperCenter', childForceExpandWidth = false, color = '#FFFFFF00', offsetXY = '0 10', width = 400, height = 300 }, {approveVote, rejectVote})
+   local voteGroup = CreateUiTable("ToggleGroup", { id = player_color..' Votes', active = false, allowSwitchOff = true }, { votePanel })
+
+   return CreateUiTable("Panel", { visibility = player_color }, {voteGroup, roleUi, infoText})
+end
+
+function loadBoardUi(board)
+   local tokens = {}
+
+   local t, v, m = 108, 107, 87
+   for i = 1, 5 do
+
+      table.insert(tokens, {
+         tag = 'Button',
+         attributes = { id = 'Token '..i, active = false, image = 'Resistance Token', width = 48, height = 48, rotation = '0 0 180', position = t..' 4 -20', onMouseEnter = '' }
+      })
+
+      table.insert(tokens, {
+         tag = 'Image',
+         attributes = { id = 'Vote Track '..i, active = false, image = 'Vote Token', width = 35, height = 35, rotation = '180 0 0', position = v..' 72 -20' }
+      })
+
+      table.insert(tokens, {
+         tag = 'Button',
+         attributes = { id = 'Round Marker '..i, active = false, image = 'Round Marker', width = 23, height = 23, rotation = '0 0 180', position = m..' 25 -20' }
+      })
+
+      t = t - 52
+      v = v - 38
+      m = m - 52
+   end
+
+   local cards = {}
+   for i = 1, 7 do
+      table.insert(cards, {
+         tag = 'Image',
+         attributes = { id = 'Card '..i, color = '#333333', active = false, image = 'Card Back', preferredWidth = '50', preserveAspect = true }
+      })
+   end
+
+   table.insert(tokens, {
+      tag = 'HorizontalLayout',
+      attributes = { id = 'Card List', childAlignment = 'MiddleCenter', childForceExpandWidth = false, spacing = 5, width = 275, height = 80, rotation = '0 0 180', position = '0 -60 -20' },
+      children = cards
+   })
+
+   board.UI.setXmlTable(tokens)
+end
+
+function CheckTeam()
+   local str = "Proposed Team:"
+   local onTeamCount = 0
+   for color, inTeam in pairs(SelectedTeam) do
+      if inTeam then
+         onTeamCount = onTeamCount + 1
+         str = str .. "\n<textcolor color='" .. hexColors[color] .. "'>" .. (Player[color].steam_name or color) .. "</textcolor>"
+      end
+   end
+
+   for i = onTeamCount, (MissionCount - 1) do
+      str = str .. "\n<textcolor color=\"#7F7F7F\">[SELECTING]</textcolor>"
+   end
+
+   local bonusReq = true
+   for req, data in pairs(BonusTeamRequirements) do
+      if data.onCheck ~= nil then
+         data.onCheck(onTeamCount == MissionCount)
+      end
+
+      if data.player ~= "" then
+         str = str .. req .. "<textcolor color='" .. hexColors[data.player] .. "'>" .. (Player[data.player].steam_name or data.player) .. "</textcolor>"
+      elseif data.player == "" then
+         str = str .. req .. "<textcolor color=\"#7F7F7F\">[SELECTING]</textcolor>"
+         bonusReq = false
+      end
+   end
+
+   Global.UI.setAttributes("Dialogue Box", { active = true, visibility = "" })
+   Global.UI.setValue("Dialogue Box Text", str)
+
+   if onTeamCount == MissionCount and bonusReq then
+      Global.UI.setAttributes("Dialogue Box Button", { active = true, text = "Propose Team", visibility = GameData["Current Leader"], onClick = "onDialogueClick" })
+      return true, bonusReq
+   else
+      Global.UI.setAttributes("Dialogue Box Button", { active = false })
+      return false, bonusReq
+   end
+end
+
+function SelectInvestigator(player, input, id)
+   if player.color ~= GameData["Current Leader"] then return end
+   if BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player == input then
+      ActivePlayers[input].placard.UI.setAttributes("Team Token", { color = "#707070", image = "Investigator Token" })
+      BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player = ""
+      KeepTeamToken[input] = false
+   else
+      if BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player ~= "" then
+         local oldInvest = BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player
+         ActivePlayers[oldInvest].placard.UI.setAttributes("Team Token", { color = "#707070", image = "Investigator Token" })
+         KeepTeamToken[oldInvest] = false
+      end
+
+      ActivePlayers[input].placard.UI.setAttributes("Team Token", { color = "#FFFFFF", image = "Investigator Token" })
+      BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player = input
+      KeepTeamToken[input] = true
+   end
+
+   CheckTeam()
+end
+
+-- Updates the current game state and notifies any listeners of the change
+-- Returns if the passed in state wasn't overwriten by a listener
+function UpdateGameState(state)
+   local resState = state
+   for i, option in pairs( GameListeners['Priority-State Change'] ) do
+      resState = option:onGamePriorityStateChange(resState) or resState
+   end
+   for i, option in pairs( GameListeners['Pre-State Change'] ) do
+      resState = option:onGamePreStateChange(resState) or resState
+   end
+
+   GameState = resState
+
+   for i, option in pairs( GameListeners['Post-State Change'] ) do
+      option:onGamePostStateChange( GameState )
+   end
+
+   return resState == state
+end
+
+-- Functions triggered by button clicks
+function onTeamTokenClick(player, input, id)
+   if GameState == "Selecting Team" then
+      if player.color ~= GameData["Current Leader"] then return end
+
+      if IncompatPlayers[input] then
+         safeBroadcastToColor("Player cannot be added to this mission", player.color, {1, 0, 0})
+         return
+      end
+      if PermPlayers[input] then
+         safeBroadcastToColor("This player may not be removed from this mission", player.color, {1, 0, 0})
+         return
+      end
+
+      if SelectedTeam[input] then
+         SelectedTeam[input] = false
+         ActivePlayers[input].placard.UI.setAttributes("Team Token", { color = "#707070" })
+         SelectedTeamCount = SelectedTeamCount - 1
+      else
+         SelectedTeam[input] = true
+         ActivePlayers[input].placard.UI.setAttributes("Team Token", { color = "#FFFFFF" })
+         SelectedTeamCount = SelectedTeamCount + 1
+      end
+
+      CheckTeam()
+   elseif GameState == "Assassin Guess" then
+      if ActivePlayers[player.color].role.name ~= "Assassin" then return end
+
+      ActivePlayers[player.color].role.attemptedAssassin = true
+
+      local str = "The Assassin assassinated [" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .."\n"
+
+      local target = ActivePlayers[input].role.name
+      if target == "Commander" then
+         str = str .. "[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FF6363] was the Commander!"
+         GameData["Mission Results"].FailCount = 3
+      else
+         str = str .. "[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[00FFFF] was not the Commander!"
+      end
+      broadcastToAll(str, {1, 1, 0})
+      UpdateGameState("Game Over")
+   elseif GameState == "SCP Guess" then
+      if ActivePlayers[player.color].role.name ~= "SCP Agent" then return end
+
+      ActivePlayers[player.color].role.attemptedGuess = true
+
+      local str = "The SCP Agent captured [" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .."\n"
+
+      local scpTeam = ActivePlayers[player.color].role.team
+      local target = ActivePlayers[input].role.name
+      if target == "All Seeing Eye" then
+         str = str .. "[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FFFF00] was successfully captured and contained!"
+         ActivePlayers[player.color].role.team = ActivePlayers[input].role.team
+         ActivePlayers[input].role.team = scpTeam
+      else
+         str = str .. "[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FF0000] was captured but was not the All-Seeing Eye!"
+      end
+      broadcastToAll(str, {1, 1, 0})
+      UpdateGameState("Game Over")
+   elseif GameState == "Resistance Hunter Guess" then
+      if ActivePlayers[player.color].role.name ~= "Resistance Hunter" then return end
+      local str = "The Hunter blamed [" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .."\n"
+      local target = ActivePlayers[input].role.name
+      if target == "Spy Chief" then
+         str = str .. "[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[00FFFF] was the Spy Chief!"
+         ActivePlayers[player.color].role.correctGuess = true
+         broadcastToAll(str, {0, 1, 1})
+         UpdateGameState("Game Over")
+      else
+         str = str .. "[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FF6363] was not the Spy Chief!"
+         broadcastToAll(str, {1, 0, 0})
+         GameData["Mission Results"][GameData["Current Mission"] - 1] = "Fail"
+         getObjectFromGUID(MainBoardGUID).UI.setAttributes('Token '..GameData["Current Mission"] - 1, { active = true, image = "Spy Token" })
+         GameData["Mission Results"].FailCount = GameData["Mission Results"].FailCount + 1
+         GameData["Mission Results"].SuccessCount = GameData["Mission Results"].SuccessCount - 1
+      end
+      UpdateGameState("Mission End")
+   elseif GameState == "Spy Hunter Guess" then
+      if ActivePlayers[player.color].role.name ~= "Spy Hunter" then return end
+      local str = "The Hunter blamed [" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .."\n"
+      local target = ActivePlayers[input].role.name
+      if target == "Resistance Chief" or target == "Coordinator" then
+         str = str .. "[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FF6363] was the " .. target .. "!"
+         ActivePlayers[player.color].role.correctGuess = true
+         broadcastToAll(str, {0, 1, 1})
+         UpdateGameState("Spy Instant Win")
+         return
+      else
+         str = str .. "[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[00FFFF] was not the Resistance Chief!"
+         broadcastToAll(str, {1, 0, 0})
+         GameData["Mission Results"][GameData["Current Mission"] - 1] = "Success"
+         getObjectFromGUID(MainBoardGUID).UI.setAttributes('Token '..GameData["Current Mission"] - 1, { active = true, image = "Resistance Token" })
+         GameData["Mission Results"].FailCount = GameData["Mission Results"].FailCount - 1
+         GameData["Mission Results"].SuccessCount = GameData["Mission Results"].SuccessCount + 1
+      end
+
+      GameData["Current Leader"] = ActivePlayers[GameData["Current Leader"]].previousPlayer
+      GameData["Current Mission"] = GameData["Current Mission"] - 1
+      UpdateGameState("Mission End")
+   elseif GameState == "Deep Agent Guess" then
+      if ActivePlayers[player.color].role.name ~= "Deep Agent" then return end
+
+      ActivePlayers[player.color].role.attemptedAssassin = true
+
+      local str = "The Deep Agent blamed [" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .."\n"
+
+      local target = ActivePlayers[input].role.name
+      if target == "Pretender" then
+         str = str .. "[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FF6363] was the Pretender!"
+
+         local oldRole = ActivePlayers[player.color].role
+         ActivePlayers[player.color].role = ActivePlayers[input].role
+         ActivePlayers[input].role = oldRole
+
+         ActivePlayers[player.color].role:onAssignment(player.color)
+         ActivePlayers[input].role:onAssignment(input)
+
+         UI.setAttributes(player.color .. " Role Info", { text = "You are now a part of the Resistance" })
+         UI.setAttributes(input .. " Role Info", { text = "You have been revealed as a Spy" })
+
+         ActivePlayers[player.color].placard.UI.setAttributes("Public Role Image", { active = true, image = "Pretender 1"})
+         ActivePlayers[input].placard.UI.setAttributes("Public Role Image", { active = true, image = "Deep Agent 1"})
+
+      else
+         str = str .. "[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[00FFFF] was not the Pretender!"
+      end
+      broadcastToAll(str, {1, 1, 0})
+
+      BeginTeamSelect()
+   elseif GameState == "Investigator" then
+      local invest = BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player
+
+      if invest ~= player.color then return end
+      local str = "The Investigator investigated [" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input)
+      local target = ActivePlayers[input].role.name
+      broadcastToAll(str, {1, 1, 0})
+
+      if GameData["Active Player Count"] >= 7 then
+         if target == "Spy Chief" then
+            safeBroadcastToColor("[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FF6363] is the Spy Chief!", invest, {1, 0.4, 0.4})
+         elseif target == "Resistance Chief" or target == "Dummy Agent" then
+            safeBroadcastToColor("[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[00FFFF] is the Resistance Chief!", invest, {0, 1, 1})
+         else
+            safeBroadcastToColor("[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FFFF00] is not a Chief!", invest, {1, 1, 0})
+         end
+      else
+
+         if target == "Spy Chief" or target == "Resistance Chief" or target == "Dummy Agent" then
+            safeBroadcastToColor("[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[00FFFF] is a Chief!", invest, {0, 1, 1})
+         else
+            safeBroadcastToColor("[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FFFF00] is not a Chief!", invest, {1, 1, 0})
+         end
+      end
+
+      UpdateGameState("Mission End")
+   elseif GameState == "Trapping" then
+      if player.color ~= GameData["Current Leader"] then return end
+
+      local playerIndex = 1
+      for color, data in pairs(ActivePlayers) do
+         if SelectedTeam[color] then
+            data.placard.UI.setAttributes("Team Token", {active = true, image = "Team Token " .. math.random(5)})
+
+            if color == input then
+               local m = "Mission " .. GameData["Current Mission"] .. " Vote " .. ((GameData['Vote Rejects'] or 0) + 1) .. " Proposed Player " .. playerIndex
+               Global.UI.setAttributes(m, { active = true, tooltip = "Trapped: " .. (Player[color].steam_name or color), text = "X" })
+            end
+
+            playerIndex = playerIndex + 1
+         else
+            data.placard.UI.setAttributes("Team Token", {active = false})
+         end
+      end
+
+      local target = ActivePlayers[input]
+      target.placard.UI.setAttributes("Team Token", {active = true, image = "Trapped Token"})
+
+      if ActivePlayers[player.color].role.name == "Witness" then
+         local witnessColor = string.sub(ActivePlayers[player.color].playedMissionCard, 9, string.len(ActivePlayers[player.color].playedMissionCard))
+         ActivePlayers[player.color].playedMissionCard = ActivePlayers[witnessColor].playedMissionCard
+      end
+
+      if target.role.name == "Witness" then
+         local witnessColor = string.sub(target.playedMissionCard, 9, string.len(target.playedMissionCard))
+         target.playedMissionCard = ActivePlayers[witnessColor].playedMissionCard
+      elseif target.role.name == "Amnesiac" then
+         if target.playedMissionCard == "Unknown" then
+            target.playedMissionCard = target.role.trueCard
+         end
+      end
+
+      safeBroadcastToColor("[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FFFF00] played a " .. target.playedMissionCard .. " card!", player.color, {1, 1, 0})
+      target.playedMissionCard = nil
+      SelectedTeam[input] = false
+
+      UpdateGameState("Mission Result")
+   elseif GameState == "Sergeant Choice" then
+      if player.color ~= BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"].player then return end
+
+      for color, data in pairs(ActivePlayers) do
+         if SelectedTeam[color] then
+            data.placard.UI.setAttributes("Team Token", {active = true, image = "Team Token " .. math.random(5)})
+         else
+            data.placard.UI.setAttributes("Team Token", {active = false})
+         end
+      end
+
+      local target = ActivePlayers[input]
+      if ActivePlayers[player.color].role.name == "Witness" then
+         local witnessColor = string.sub(ActivePlayers[player.color].playedMissionCard, 9, string.len(ActivePlayers[player.color].playedMissionCard))
+         ActivePlayers[player.color].playedMissionCard = ActivePlayers[witnessColor].playedMissionCard
+      end
+
+      if target.role.name == "Witness" then
+         local witnessColor = string.sub(target.playedMissionCard, 9, string.len(target.playedMissionCard))
+         target.playedMissionCard = ActivePlayers[witnessColor].playedMissionCard
+      elseif target.role.name == "Amnesiac" then
+         if target.playedMissionCard == "Unknown" then
+            target.playedMissionCard = target.role.trueCard
+         end
+      end
+
+      safeBroadcastToColor("[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FFFF00] played a " .. target.playedMissionCard .. " card!", player.color, {1, 1, 0})
+      target.playedMissionCard = ActiveOptions["Sergeant Mode"].cardSwaps[target.playedMissionCard]
+
+      UpdateGameState("Mission Result")
+   elseif GameState == "Inquistor" then
+      if ActiveOptions["Inquisitor Mode"].inquistor ~= player.color then return end
+      local target = ActivePlayers[input].role.team
+
+      if target == "Resistance" then
+         safeBroadcastToColor("[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[00FFFF] is a Resistance!", player.color, {0, 1, 1})
+      else
+         safeBroadcastToColor("[" .. getPlayerHexCode(input) .."]" .. (Player[input].steam_name or input) .. "[FF6363] is a Spy!", player.color, {1, 0.4, 0.4})
+      end
+      ActivePlayers[ActiveOptions["Inquisitor Mode"].inquistor].placard.UI.setAttributes("Inquisitor Image", { active = false })
+
+      ActiveOptions["Inquisitor Mode"].inquistor = input
+      ActivePlayers[ ActiveOptions["Inquisitor Mode"].inquistor].placard.UI.setAttributes("Inquisitor Image", { active = true })
+
+      UpdateGameState("Mission End")
+   end
+end
+
+PrevoteCount = 0
+function onVoteCardClick(player, input, id)
+   if GameState == "Team Proposed" or GameState == "Prevotes" then
+      if GameData["Selected Votes"] == nil then GameData["Selected Votes"] = {} end
+
+      if GameData["Selected Votes"][player.color] == input then
+         GameData["Selected Votes"][player.color] = nil
+
+         ActivePlayers[player.color].placard.UI.setAttributes("Vote Token", { color = "#707070", image = "Vote Back" })
+         GameData["Vote Count"] = GameData["Vote Count"] - 1
+      else
+         if GameData["Selected Votes"][player.color] == nil then
+            GameData["Vote Count"] = GameData["Vote Count"] + 1
+         end
+
+         local image = "Vote Back"
+         if GameState == "Prevotes" then
+            image = input
+         end
+
+         GameData["Selected Votes"][player.color] = input
+         ActivePlayers[player.color].placard.UI.setAttributes("Vote Token", { color = "#FFFFFF", image = image })
+      end
+
+      if GameState == "Prevotes" and GameData["Vote Count"] == PrevoteCount then
+         UpdateGameState("Team Proposed")
+      end
+
+      if GameData["Vote Count"] == GameData["Active Player Count"] then
+         UpdateGameState("Votes Submitted")
+      end
+   end
+end
+
+function onMissionCardClick(player, input, id)
+   if GameState == "Begin Mission" then
+      if ActivePlayers[player.color].playedMissionCard == input then
+         ActivePlayers[player.color].playedMissionCard = nil
+         GameData["Mission Count"] = GameData["Mission Count"] - 1
+
+         ActivePlayers[player.color].placard.highlightOn({1, 0, 0})
+         ActivePlayers[player.color].frame.highlightOn({1, 0, 0})
+      else
+         if ActivePlayers[player.color].playedMissionCard == nil then
+            GameData["Mission Count"] = GameData["Mission Count"] + 1
+         end
+         ActivePlayers[player.color].playedMissionCard = input
+
+         ActivePlayers[player.color].placard.highlightOn({0, 1, 0})
+         ActivePlayers[player.color].frame.highlightOn({0, 1, 0})
+      end
+
+      if GameData["Mission Count"] == MissionCount then
+         UpdateGameState("Mission Result")
+      end
+   end
+end
+
+function onDialogueClick(player, input, id)
+   if GameState == "Selecting Team" then
+      if player.color ~= GameData["Current Leader"] then return end
+
+      Global.UI.setAttributes("Dialogue Box Button", { active = false })
+
+      UpdateGameState("Team Proposed")
+   elseif GameState == "Comm Choice" then
+      if player.color ~= GameData["Current Leader"] then return end
+
+      if input == "Show Result" then
+         ActiveOptions["Communications Mode"].choice = "Show"
+      else
+         ActiveOptions["Communications Mode"].choice = "Hide"
+      end
+
+      ActiveOptions["Communications Mode"].madeChoice = true
+
+      Global.UI.setAttributes("Dialogue Box", { active = false })
+      Global.UI.setAttributes("Dialogue Box Button", { active = false })
+      Global.UI.setAttributes("Dialogue Box Bonus Button", { active = false })
+
+      UpdateGameState("Mission Result")
+   elseif GameState == "Sergeant Choice" then
+      --UpdateGameState("Mission Result")
+
+      Global.UI.setAttributes("Dialogue Box", { active = false })
+      Global.UI.setAttributes("Dialogue Box Button", { active = false })
+      Global.UI.setAttributes("Dialogue Box Bonus Button", { active = false })
+
+      UpdateGameState("Mission Result")
+   elseif GameState == "Plot Cards" then
+      Global.UI.setAttributes("Dialogue Box", { active = false })
+      Global.UI.setAttributes("Dialogue Box Button", { active = false })
+      Global.UI.setAttributes("Dialogue Box Bonus Button", { active = false })
+
+      UpdateGameState("Plot Card Assigned")
+   end
+end
+
+function onTargetClick(player, input, id)
+   if ActivePlayers[player.color].role.name == "Hacker" or ActivePlayers[player.color].role.name == "Corruptor" then
+      ActivePlayers[player.color].role.target = input
+   elseif ActivePlayers[player.color].role.name == "Bioterrorist" then
+      ActivePlayers[player.color].role.target = input
+   end
+end
+
+function onAbilityClick(player, input, id)
+   if input == "Mayor" and (ActivePlayers[player.color].role.name == "Mayor" or ActivePlayers[player.color].role.name == "Politician") then
+      UI.setAttributes(id, {active = false})
+      ActivePlayers[player.color].placard.UI.setAttributes("Public Role Image", { active = true, image = "Mayor 1" })
+      ActivePlayers[player.color].role.active = true
+      broadcastToAll("[" .. getPlayerHexCode(player.color) .."]" .. (Player[player.color].steam_name or input) .. "[FF0000] has revealed themselves as the Mayor!", {1, 1, 0})
+   elseif input == "Deep Agent" and GameState == "Selecting Team" and ActivePlayers[player.color].role.name == "Deep Agent" then
+      UI.setAttributes(id, {active = false})
+      ActivePlayers[player.color].placard.UI.setAttributes("Public Role Image", { active = true, image = "Deep Agent 1"})
+      ActivePlayers[player.color].role.active = true
+
+      UpdateGameState("Deep Agent Guess")
+   elseif input == "Hunter" and ActivePlayers[player.color].role.name == "Spy Hunter" then
+      for color, data in pairs(ActivePlayers) do
+         data.placard.UI.setAttributes("Team Token", { active = true, image = 'Assassination Token', color = "#FFFFFF", onClick = "Global/onTeamTokenClick("..color..")" })
+      end
+      ActivePlayers[player.color].placard.UI.setAttributes("Team Token", { active = false })
+      ActivePlayers[player.color].placard.UI.setAttributes("Public Role Image", { active = true, position = pos, image = ActivePlayers[player.color].role.image })
+      ActivePlayers[player.color].role.active = true
+
+      broadcastToAll("The Spy Hunter has revealed themselves and is Accusing!", {1, 0.4, 0.4})
+      UpdateGameState("Spy Hunter Guess")
+   elseif input == "ASI Resistance" or input == "ASI Spy" then
+      local scp = FindPlayerByRole("SCP Agent")
+      local scpRole = ActivePlayers[scp].role
+
+      local asi = ActivePlayers[player.color].role
+      if input == "ASI Spy" then
+         asi.team = "Spy"
+         asi.image = "Spy ASI"
+         asi.info = "You have decided to join the Spies"
+
+         scpRole.team = "Resistance"
+         scpRole.image = "Resistance SCP"
+         scpRole.info = "You have been assigned to assist the Resistance"
+      else
+         asi.team = "Resistance"
+         asi.image = "Resistance ASI"
+         asi.info = "You have decided to join the Resistance"
+
+         scpRole.team = "Spy"
+         scpRole.image = "Spy SCP"
+         scpRole.info = "You have been assigned to assist the Spies"
+      end
+
+      Global.UI.setValue(asi.color .. " Role Info", asi.info)
+      asi.player.placard.UI.setAttributes("Role Image", { active = true, image = asi.image, visibility = player.color .. "|Black" })
+
+      Global.UI.setValue(scpRole.color .. " Role Info", scpRole.info)
+
+      Global.UI.setAttributes(player.color .. " Ability Button", {active = false})
+      Global.UI.setAttributes(player.color .. " Ability Button Bonus", {active = false})
+      scpRole.player.placard.UI.setAttributes("Role Image", { active = true, image = scpRole.image, visibility = scpRole.color .. "|Black" })
+   end
+end
+
+function onLeaderTokenClick(player, input, id)
+   if GameState == "Selecting Team" then
+      if player.color ~= GameData["Current Leader"] or input == GameData["Current Leader"] then return end
+      if not SelectedTeam[input] then
+         safeBroadcastToColor("You may only choose a player that is assigned to the Mission team", player.color, {1, 0, 0})
+         return
+      end
+
+      if BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"] ~= nil and BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"] == nil then
+         local curWatch = BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"].player
+         if curWatch ~= "" then
+            ActivePlayers[curWatch].placard.UI.setAttributes("Leader Token", { active = true, color = "#707070", image = "Watching Token", onClick = "Global/onLeaderTokenClick("..input..")" })
+         end
+
+         if curWatch ~= input then
+            ActivePlayers[input].placard.UI.setAttributes("Leader Token", { active = true, color = "#FFFFFF", image = "Watching Token", onClick = "Global/onLeaderTokenClick("..input..")" })
+            BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"].player = input
+         else
+            BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"].player = ""
+         end
+      elseif BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"] ~= nil and BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"] == nil then
+         local curSarge = BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"].player
+         if curSarge ~= "" then
+            ActivePlayers[curSarge].placard.UI.setAttributes("Leader Token", { active = true, color = "#707070", image = "Sergeant Token", onClick = "Global/onLeaderTokenClick("..input..")" })
+         end
+
+         if curSarge ~= input then
+            ActivePlayers[input].placard.UI.setAttributes("Leader Token", { active = true, color = "#FFFFFF", image = "Sergeant Token", onClick = "Global/onLeaderTokenClick("..input..")" })
+            BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"].player = input
+         else
+            BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"].player = ""
+         end
+      elseif BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"] ~= nil and BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"] ~= nil then
+         local curWatch = BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"].player
+         local curSarge = BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"].player
+
+         if input == curSarge then
+            -- Cycle to watch
+            if curWatch ~= "" then
+               ActivePlayers[curWatch].placard.UI.setAttributes("Leader Token", { active = true, color = "#707070", image = "Watching Token", onClick = "Global/onLeaderTokenClick("..input..")" })
+            end
+
+            ActivePlayers[input].placard.UI.setAttributes("Leader Token", { active = true, color = "#FFFFFF", image = "Watching Token", onClick = "Global/onLeaderTokenClick("..input..")" })
+            BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"].player = input
+            BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"].player = ""
+         elseif input == curWatch then
+            -- Cycle to null
+            ActivePlayers[curWatch].placard.UI.setAttributes("Leader Token", { active = true, color = "#707070", image = "Watching Token", onClick = "Global/onLeaderTokenClick("..input..")" })
+            BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"].player = ""
+         else
+            -- Cycle to sarge
+            if curSarge ~= "" then
+               ActivePlayers[curSarge].placard.UI.setAttributes("Leader Token", { active = true, color = "#707070", image = "Sergeant Token", onClick = "Global/onLeaderTokenClick("..input..")" })
+            end
+
+            ActivePlayers[input].placard.UI.setAttributes("Leader Token", { active = true, color = "#FFFFFF", image = "Sergeant Token", onClick = "Global/onLeaderTokenClick("..input..")" })
+            BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"].player = input
+         end
+      end
+
+      local str = "Proposed Team:"
+      local onTeamCount = 0
+      for color, inTeam in pairs(SelectedTeam) do
+         if inTeam then
+            onTeamCount = onTeamCount + 1
+            str = str .. "\n<textcolor color='" .. hexColors[color] .. "'>" .. (Player[color].steam_name or color) .. "</textcolor>"
+         end
+      end
+
+      for i = onTeamCount, (MissionCount - 1) do
+         str = str .. "\n<textcolor color=\"#7F7F7F\">[SELECTING]</textcolor>"
+      end
+
+      for req, data in pairs(BonusTeamRequirements) do
+         if data.player ~= "" then
+            str = str .. req .. "<textcolor color='" .. hexColors[data.player] .. "'>" .. (Player[data.player].steam_name or data.player) .. "</textcolor>"
+            Global.UI.setAttributes("Dialogue Box", { active = true, visibility = "" })
+            Global.UI.setValue("Dialogue Box Text", str)
+         elseif data.player == "" then
+            str = str .. req .. "<textcolor color=\"#7F7F7F\">[SELECTING]</textcolor>"
+            Global.UI.setAttributes("Dialogue Box", { active = true, visibility = "" })
+            Global.UI.setValue("Dialogue Box Text", str)
+            return
+         end
+      end
+
+      Global.UI.setAttributes("Dialogue Box", { active = true, visibility = "" })
+      Global.UI.setValue("Dialogue Box Text", str)
+
+      if onTeamCount == MissionCount then
+         Global.UI.setAttributes("Dialogue Box Button", { active = true, text = "Propose Team", visibility = GameData["Current Leader"], onClick = "onDialogueClick" })
+      else
+         Global.UI.setAttributes("Dialogue Box Button", { active = false })
+      end
+   end
+end
+
+function onRoundClick(player, input, id)
+   if GameState == "Choosing Mission" then
+      if player.color ~= GameData["Current Leader"] then return end
+      GameData["Current Mission"] = tonumber(input)
+      BeginTeamSelect()
+   end
+end
+
+BonusTeamRequirements = { }
+
+function CreateMissionLog()
+   local missionBlocks = {}
+   for i = 1, 5 do
+      local missionText = CreateUiText("Mission " .. i, { fontSize = 35, active = false, id = "Mission " .. i .. " Label" })
+      table.insert(missionBlocks, missionText)
+
+      local playerList = {}
+      for k = 1, 8 do
+         local player = CreateUiText("S", { id = "Mission " .. i .. " Player " .. k, active = false, resizeTextForBestFit = true, fontSize = "50" })
+         table.insert(playerList, player)
+      end
+      local bplayer = CreateUiText("�", { id = "Mission " .. i .. " Investigator", active = false, resizeTextForBestFit = true, fontSize = "50" })
+      table.insert(playerList, bplayer)
+
+      table.insert(playerList, CreateUiText("-", {fontSize = "50", color = "#00000000"}))
+      for k = 1, 6 do
+         local player = CreateUiTable("Image", {id = "Mission " .. i .. " Card " .. k, image = "Card Back", active = false, preserveAspect = true, preferredHeight = 50, preferredWidth = 35 })
+         table.insert(playerList, player)
+      end
+
+      local missionBlock = CreateUiTable("HorizontalLayout", { id = "Mission " .. i .. " Results", active = false, childAlignment = "MiddleCenter", rectAlignment = "UpperCenter", spacing = 10, childForceExpandHeight = false, childForceExpandWidth = false}, playerList)
+      table.insert(missionBlocks, missionBlock)
+
+      local showVoteButton = CreateUiTable("Button", { active = false, id = "Mission " .. i .. " Show Votes", text = "Toggle Vote History", preferredHeight = 20 })
+      table.insert(missionBlocks, showVoteButton)
+
+      local voteHistory = {}
+      for k = 1, 5 do
+         local team = {}
+         table.insert(team, CreateUiText("Proposed Team " .. k, {fontSize = "30"}))
+
+         for j = 1, 7 do
+            local player = CreateUiText("S", { id = "Mission " .. i .. " Vote " .. k .. " Proposed Player " .. j, active = false, resizeTextForBestFit = true, fontSize = "30" })
+            table.insert(team, player)
+         end
+         local nplayer = CreateUiText("S", { id = "Mission " .. i .. " Vote " .. k .. " Proposed Investigator", active = false, resizeTextForBestFit = true, fontSize = "30" })
+         table.insert(team, nplayer)
+
+         local horLay = CreateUiTable("HorizontalLayout", { visibility = "__", id = "Mission " .. i .. " Vote Proposal " .. k, active = false, childAlignment = "MiddleCenter", rectAlignment = "UpperCenter", spacing = "10", childForceExpandHeight = false, childForceExpandWidth = false}, team)
+         table.insert(voteHistory, horLay)
+
+         local voteRes = {}
+         for j = 1, 10 do
+            local player = CreateUiText("S", { id = "Mission " .. i .. " Vote " .. k .. " Player " .. j .. " Vote", active = false, resizeTextForBestFit = true, fontSize = 30 })
+            table.insert(voteRes, player)
+         end
+
+         local horVoteLay = CreateUiTable("HorizontalLayout", { visibility = "__", id = "Mission " .. i .. " Player Votes " .. k, childAlignment = "MiddleCenter", rectAlignment = "UpperCenter", spacing = 10, childForceExpandHeight = false, childForceExpandWidth = false}, voteRes)
+         table.insert(voteHistory, horVoteLay)
+      end
+
+      for _, a in pairs(voteHistory) do
+         table.insert(missionBlocks, a)
+      end
+
+      table.insert(missionBlocks, CreateUiText("-", {fontSize = "50", color = "#00000000"}))
+   end
+
+   local layout = CreateUiTable("VerticalLayout", { childForceExpandHeight = false, height = "10000", padding = "5 5 5 5" }, missionBlocks)
+   local scroll = CreateUiTable("VerticalScrollView", { id = "Mission Log", color = "#FFFFFF33", width = "500", height = "500", rectAlignment = "LowerRight", offsetXY = "0 75"}, layout)
+
+   return scroll
+end
+
+function UpdateMissionLog()
+   local leaderSymbol = "★"
+   local sergantSymbol = "◈"
+   local sergantSymbol = "�"
+   local watchSymbol = "●"
+   local normalSymbol = "■"
+   local approveSymbol = "☑"
+   local rejectSymbol = "☒"
+end
+
+function CreateRoleSelectButtons(role)
+   if roleCards[role].guid == nil then return end
+   local data = {click_function = "SelectRole", function_owner = self, label = " ", scale = {0.5, 0.5, 0.5}, width = 1300, height = 1400, font_size = 400, tooltip = role}
+   local explain = {click_function = "ExplainRole", function_owner = self, label = "?", position = {0.55, 0.1, 0.85}, scale = {0.2, 0.2, 0.2}, width = 400, height = 400, font_size = 400, tooltip = "Details"}
+
+   getObjectFromGUID(roleCards[role].guid).createButton(data)
+   getObjectFromGUID(roleCards[role].guid).createButton(explain)
+end
+
+InvalidRandomRoles = {}
+TempSelectedRoles = {}
+function SelectRandomRoles(show)
+   local playerCount = #getSeatedPlayers()
+   if playerCount <= 1 then playerCount = 7 end
+   local spyCount = PlayerCountData[playerCount].spyCount
+   local resCount = playerCount - spyCount
+
+   local pos = {
+      "Commander",
+      "Body Guard",
+      "Witness",
+      "Resistance Reverser",
+      "Pilot",
+      "Hacker",
+      "Mayor",
+      "Pretender",
+      "Pathologist",
+      "Resistance Rogue",
+      "Resistance Defector",
+      "Confidant",
+      "Resistance Hunter",
+      "Resistance Chief",
+      "Coordinator",
+      "Dummy Agent",
+      "Assassin",
+      "False Commander",
+      "Deep Cover",
+      "Blind Spy",
+      "Spy Reverser",
+      "Corruptor",
+      "Politician",
+      "Hitman",
+      "Deep Agent",
+      "Bioterrorist",
+      "Mole",
+      "Rogue Spy",
+      "Spy Defector",
+      "Spy Hunter",
+      "Spy Chief",
+      "Amnesiac",
+      "Clone",
+      "ASI",
+      "SCP Agent",
+   }
+
+
+   if show then
+      SelectedRoles = {}
+      InvalidRandomRoles = {}
+      TempSelectedRoles = {}
+
+      for role, data in pairs(roleCards) do
+         if data.guid ~= nil then
+            getObjectFromGUID(data.guid).highlightOff()
+         end
+      end
+   end
+
+   while (spyCount > 0 or resCount > 0) and #pos > 0 do
+      TempSelectedRoles = {}
+
+      local selectedRole = table.remove(pos, math.random(#pos))
+      if not TempSelectedRoles[selectedRole] and not InvalidRandomRoles[selectedRole] and not SelectedRoles[selectedRole] then
+         local s, r = TempAdd(selectedRole, 0, 0, playerCount)
+
+         if s > spyCount or r > resCount then
+            InvalidRandomRoles[selectedRole] = true
+         else
+            spyCount = spyCount - s
+            resCount = resCount - r
+            AddRole(selectedRole, show)
+         end
+
+      end
+   end
+end
+
+function TempAdd(role, spyCount, resCount, playerCount)
+   if TempSelectedRoles[role] then
+      return spyCount, resCount
+   end
+   if InvalidRandomRoles[role] then
+      return 999, 999
+   end
+
+   if roleCards[role].team == "Spy" then
+      spyCount = spyCount + 1
+   elseif roleCards[role].team == "Resistance" then
+      resCount = resCount + 1
+   else
+      --log(roleCards[role].team)
+   end
+
+   if role == "Resistance Chief" and playerCount >= 8 then
+      resCount = resCount + 1
+   end
+   if role == "Spy Chief" and playerCount >= 10 then
+      spyCount = spyCount + 1
+   end
+
+   TempSelectedRoles[role] = true
+
+   if roleCards[role].requires ~= nil then
+      for _, r in pairs(roleCards[role].requires) do
+         if not SelectedRoles[r] and not TempSelectedRoles[r] then
+            spyCount, resCount = TempAdd(r, spyCount, resCount, playerCount)
+         end
+      end
+   end
+
+   return spyCount, resCount
+end
+
+possibleRoles = {
+   "Commander",
+   "Body Guard",
+   "Witness",
+   "Resistance Reverser",
+   "Pilot",
+   "Hacker",
+   "Mayor",
+   "Pretender",
+   "Pathologist",
+   "Resistance Rogue",
+   "Resistance Defector",
+   "Confidant",
+   "Resistance Hunter",
+   "Resistance Chief",
+   "Coordinator",
+   "Dummy Agent",
+   "Assassin",
+   "False Commander",
+   "Deep Cover",
+   "Blind Spy",
+   "Spy Reverser",
+   "Corruptor",
+   "Politician",
+   "Hitman",
+   "Deep Agent",
+   "Bioterrorist",
+   "Mole",
+   "Rogue Spy",
+   "Spy Defector",
+   "Spy Hunter",
+   "Spy Chief",
+   "Amnesiac",
+   "Clone",
+   "ASI",
+   "SCP Agent",
+}
+
+roleCards = {
+   ["Resistance"] = { class = Resistance },
+   ["Commander"] = { description = "The Commander will be given the identites of the spies", team = "Resistance", guid = 'e347d8', class = Commander, dependents = { "Body Guard", "Assassin", "Deep Cover" } },
+   ["Body Guard"] = { description = "The Body Guard will be given the identity of the Commander", team = "Resistance", guid = '85d364', class = BodyGuard, requires = { "Commander" }, dependents = { "False Commander" } },
+   ["Witness"] = { description = "On a mission, the Witness will choose another player to be an Alibi. The Witness' Mission Card will become a duplicate of the Alibi's card", team = "Resistance", guid = '642869', class = Witness },
+   ["Resistance Reverser"] = { description = "The Reverser can play a Reverse mission card. If a Reverse card is revealed, if the mission would've failed, it'll instead succeed and vice versa", team = "Resistance", guid = '8efa7f', class = ResistanceReverser },
+   ["Pilot"] = { description = "The Pilot can play an Extract mission card. An Extract will void the current mission and continue from the next leader. Extracts are limited to 2 per game for 7+ Players and 1 per game for 5 and 6 Player games", team = "Resistance", guid = 'dc1380', class = Pilot },
+   ["Hacker"] = { description = "During a vote the Hacker can choose to Hack another player. That player's vote will then change to match the Hacker's vote", team = "Resistance", guid = '3fd5b6', class = Hacker, dependents = { "Corruptor" } },
+   ["Mayor"] = { description = "The Mayor may choose to reveal themselves. If revealed, the Mayor's votes will count as double", team = "Resistance", guid = 'a0b0c1', class = Mayor, dependents = { "Politician", "Hitman" } },
+   ["Pretender"] = { description = "The Pretender will appear as a Deep Agent to the Spies. The Deep Agent can reveal themselves and attempt to identify the Pretender. If successful, they will swap roles", team = "Resistance", guid = '47bd6e', class = Pretender, requires = { "Deep Agent" } },
+   ["Pathologist"] = { description = "The Pathologist can play Cure cards on missions. When Cure is played, any infected players will be cured. Cures are limited to 2 per game for 7+ Players and 1 per game for 5 and 6 Player games", team = "Resistance", guid = 'c76720', class = Pathologist, requires = { "Bioterrorist" } },
+   ["Resistance Rogue"] = { description = "The Resistance Rogue is a lone wolf, only out for themselves. Their goal is to play a Rogue Success on 2 Missions - Any successful mission and the final successful mission to steal the Win from the Resistance. However, the leader of each mission will assign the Watching token to a player on the mission. If the Rogue is being watched, they will be unable to play a Rogue Success for that mission", team = "Resistance", guid = 'b52c6c', class = ResistanceRogue },
+   ["Resistance Defector"] = { description = "Before each round past Mission 2, there's a chance the Defectors will swap team alliegences", team = "Resistance", guid = '7352ea', class = ResistanceDefector, requires = { "Spy Defector" }, dependents = { "Spy Defector", "Confidant" } },
+   ["Confidant"] = { description = "The Confidant will know who the Defectors are, but not which team they're allied with", team = "Resistance", guid = '84fcf9', class = Confidant, requires = { "Spy Defector" } },
+   ["Resistance Hunter"] = { description = "If the Resistance succeed in 3 missions, the Resistance Hunter must attempt to guess who the Spy Chief is to Win for the Resistance. If they're wrong, the last mission will become a Fail ad the game will continue", team = "Resistance", guid = 'c0c2d5', class = ResistanceHunter, requires = { "Resistance Chief", "Resistance Hunter", "Spy Chief", "Spy Hunter" }, dependents = { "Resistance Chief", "Resistance Hunter", "Spy Chief", "Spy Hunter" } },
+   ["Resistance Chief"] = { description = "The Resistance Chief must remain hidden from the Spies. When building a team, one non-mission member must be assigned as the Investigator. If the mission Fails the Investigator will get the chance to investigate, otherwise the Leader will get to investigate. When a player is Investiaged, the Investigator (or Leader) will be told if they are a Chief", team = "Resistance", guid = '03db91', class = ResistanceChief, requires = { "Resistance Chief", "Resistance Hunter", "Spy Chief", "Spy Hunter" }, dependents = { "Resistance Chief", "Resistance Hunter", "Spy Chief", "Spy Hunter", "Coordinator", "Dummy Agent" } },
+   ["Coordinator"] = { description = "The Resistance Chief will be told who the Coordinator is, though if the Spy Hunter Accuses the Coordinator, the Spies win", team = "Resistance", guid = 'f93679', class = Coordinator, requires = { "Resistance Hunter" } },
+   ["Dummy Agent"] = { description = "The Dummy Agent will appear as a Resistance Chief if Investigated", team = "Resistance", guid = '8ff247', class = DummyAgent, requires = { "Resistance Hunter" } },
+
+   ["Spy"] = { class = Spy },
+   ["Assassin"] = { description = "If the Resistance completes 3 Successful Missions, the Assassin will have the chance to guess who the Commander is and steal the win for the Spies", team = "Spy", guid = 'c72617', class = Assassin, requires = { "Commander" } },
+   ["False Commander"] = { description = "The False Commander's identity will be given to the Body Guard as though they were a Commander", team = "Spy", guid = '530849', class = FalseCommander, requires = { "Body Guard" } },
+   ["Deep Cover"] = { description = "The Commander will not be given the identity of the Deep Cover spy", team = "Spy", guid = '3316da', class = DeepCover, requires = { "Commander" } },
+   ["Blind Spy"] = { description = "The Blind Spy will not be given the identites of the other spies", team = "Spy", guid = '88530c', class = BlindSpy },
+   ["Spy Reverser"] = { description = "The Reverser can play a Reverse mission card. If a Reverse card is revealed, if the mission would've succeeded, it'll instead fail and vice versa", team = "Spy", guid = 'be8e11', class = SpyReverser },
+   ["Corruptor"] = { description = "The Corruptor can choose a player to plant a Worm on for one vote. If the Hacker hacks the player with a Worm, the Hacker's vote will change to match the Corruptor's", team = "Spy", guid = '779005', class = Corruptor, requires = { "Hacker" } },
+   ["Politician"] = { description = "The Politician may choose to \"reveal\" themself as the Mayor. When \"revealed\" their votes are doubled", team = "Spy", guid = 'b0aafb', class = Politician, requires = { "Mayor" } },
+   ["Hitman"] = { description = "The Hitman may choose to play a Hit mission card. If a Hit is played on a team with the Mayor, the spies instantly win. Hits are limited to 2 per game for 7+ Players and 1 per game for 5 and 6 Player games", team = "Spy", guid = 'a1891c', class = Hitman, requires = { "Mayor" } },
+   ["Deep Agent"] = { description = "The Deep Agent will not be told who the other Spies are", team = "Spy", guid = 'fbe7af', class = DeepAgent, dependents = { "Pretender" } },
+   ["Bioterrorist"] = { description = "The Bioterrorist can infect a player they go on a mission with. Infected player mission cards will appear Infected and obscured", team = "Spy", guid = '817d8a', class = Bioterrorist, dependents = { "Pathologist" } },
+   ["Mole"] = { description = "The Mole is out for themselves. Their goal is to play a Sabotage on the 5th Mission to win. Sabotage cards will prevent other special mission cards from working. The mission outcome will depend on which team is winning - If the Resistance is winning, it'll fail, otherwise it'll succeed", team = "Spy", guid = 'f3a74a', class = Mole },
+   ["Rogue Spy"] = { description = "The Rogue Spy is a Spy who has turned against the other Spies and are working alone. Their goal is to play a Fail on 2 Missions - Any mission that ends in a Failure and the final failed mission to steal the Win from the Spies", team = "Spy", guid = '8e0577', class = SpyRogue },
+   ["Spy Defector"] = { description = "Before each round past Mission 2, there's a chance the Defectors will swap team alliegences", team = "Spy", guid = 'fa640f', class = SpyDefector, requires = { "Resistance Defector" }, dependents = { "Resistance Defector" } },
+   ["Spy Hunter"] = { description = "If the Resistance succeed in 3 missions, the Resistance Hunter must attempt to guess who the Resistance Chief is to Win for the Spies. If they're wrong, the last mission will become a Success ad the game will continue. If the Spy Chief plays a Fail (or Chief Fail) during a Failed mission, the Hunter will have a choice to reveal themselves and make an early Accusation", team = "Spy", guid = 'fe128b', class = SpyHunter, requires = { "Resistance Chief", "Resistance Hunter", "Spy Chief", "Spy Hunter" }, dependents = { "Resistance Chief", "Resistance Hunter", "Spy Chief", "Spy Hunter" } },
+   ["Spy Chief"] = { description = "The Spy Chief must remain hidden from the Resistance. If the Spy Chief plays a Fail (or Chief Fail) during a Failed mission the Spy Hunter will be given the option to reveal themselves early", guid = "72bfbf", team = "Spy", class = SpyChief, requires = { "Resistance Hunter", "Spy Chief", "Spy Hunter" } },
+
+   ["Amnesiac"] = { description = "The Amnesiac will be unaware of which team or role they are. All they will be told is one member on that's on their team", guid = "449b78", class = Amnesiac },
+   ["Clone"] = { description = "One player on each team will be a Clone. After the 2 Mission, they will attempt to clone another player on their team, but only one will successfully become a copy of their ally. The other will become a Failed Clone and only know which player on their team they attempted to clone", team = "Resistance", guid = "cfa5e7", class = ResistanceClone, requires = {"Clone 2"}, dependents = {"Clone 2"} },
+   ["Clone 2"] = { team = "Spy", class = SpyClone },
+
+   ["ASI"] = { description = "", team = "Resistance", guid = "a37d32", class = ASI, requires = { "SCP Agent" }, dependents = { "SCP Agent" } },
+   ["SCP Agent"] = { description = "", team = "Spy", guid = "3b24ec", class = SCP, requires = { "ASI" }, dependents = { "ASI" } }
+}
+
+function CreateOptionSelectButtons(role)
+   if optionCards[role].guid == nil then return end
+   local data = {click_function = "SelectOption", function_owner = self, label = " ", scale = {0.5, 0.5, 0.5}, width = 2400, height = 1900, font_size = 400, tooltip = role}
+   local explain = {click_function = "ExplainOption", function_owner = self, label = "?", position = {1.6, 0.1, - 0.7}, scale = {0.4, 0.4, 0.4}, width = 400, height = 400, font_size = 400, tooltip = "Details"}
+
+   getObjectFromGUID(optionCards[role].guid).createButton(data)
+   getObjectFromGUID(optionCards[role].guid).createButton(explain)
+
+   if optionCards[role].option ~= nil then
+      local options = {click_function = "ShowOptions", function_owner = self, label = "Options", position = { - 1.3, 0.1, - 0.8}, scale = {0.3, 0.3, 0.3}, width = 1600, height = 400, font_size = 400}
+      getObjectFromGUID(optionCards[role].guid).createButton(options)
+   end
+end
+
+optionCards = {
+   ["Trapper Mode"] = { description = "Each round, the Leader will choose one extra player for each mission. After all mission cards have been submitted, the leader may choose one mission member to trap - removing their card from the Mission result. The leader will be told what card they played", guid = "82f394", class = Trapper },
+   ["Communications Mode"] = { description = "After each mission, the Leader must choose to maintain radio silence and keep the mission cards hidden or reveal the cards played. They may only break radio silence twice a game", guid = "5fea6f", class = Comms },
+   ["Targeted Mode"] = { description = "The leader may choose which mission to attempt, with the exception of the 5th mission may only be completed once two previous missions have succceeded", guid = "bfa185", class = Targeted },
+   ["Sergeant Mode"] = { description = "The leader must choose another player on the mission to be the Sergeant. The Sergeant may choose to force a player's mission card to be swapped out\n[Options]\nSet and customize what cards will be swapped with", guid = "d29c45", class = Sergeant, option = "Option Panel" },
+   ["Inquisitor Mode"] = { description = "After rounds 2, 3, and 4, the Inquisitor may choose another player and see which team they're part of. Whomever they Inquisit will become the Inquisitor for the next round", guid = "65970e", class = Inquistor },
+   ["Blind Mode"] = { description = "All spies will not be told their allies", guid = "a42ddb", class = BlindMode },
+   ["Plot Cards"] = { description = "Plot Cards are handed out by the round's first leader. Different cards have different effects or abilities\n[Options]\nUse Bonus Cards - Play with the bonus promo Plot Cards\nUse Full Reveals - Reveal your exact role when showing your character", guid = "345644", class = PlotCard, option = "Option Panel" },
+}
+
+function togglePlotOption(color, bool, id)
+   if not color.admin then return end
+   SergeantOpts[id] = bool
+end
+
+function optionSelected(color, selection, id)
+   if not color.admin then return end
+   SergeantOpts[id] = selection
+end
+
+showingOpt = false
+function ShowOptions(obj, color, click)
+   if not Player[color].admin then return end
+   showingOpt = not showingOpt
+   obj.UI.setAttributes("Options", {active = showingOpt})
+end
+
+function SelectOption(object, clicked)
+   if SelectedOptions[object.getName()] then
+      SelectedOptions[object.getName()] = false
+      getObjectFromGUID(optionCards[object.getName()].guid).highlightOff()
+   else
+      SelectedOptions[object.getName()] = true
+      getObjectFromGUID(optionCards[object.getName()].guid).highlightOn({0, 1, 0})
+   end
+end
+function ExplainOption(object, clicked)
+   local desc = optionCards[object.getName()].description or ""
+   printToColor(desc, clicked, {1, 1, 0})
+end
+
+function SelectRole(object, clicked)
+   if SelectedRoles[object.getName()] then
+      RemoveRole(object.getName(), true)
+   else
+      AddRole(object.getName(), true)
+   end
+end
+
+function AddRole(role, showInGame)
+   SelectedRoles[role] = true
+   if (roleCards[role].guid ~= nil) then
+      if GameOptions["Random Roles"] and showInGame then
+         getObjectFromGUID(roleCards[role].guid).highlightOn({1, 0, 0})
+      elseif not GameOptions["Random Roles"] then
+         getObjectFromGUID(roleCards[role].guid).highlightOn({0, 1, 0})
+      end
+   end
+
+   if roleCards[role].requires ~= nil then
+      for _, r in pairs(roleCards[role].requires) do
+         if not SelectedRoles[r] then
+            AddRole(r, showInGame)
+         end
+      end
+   end
+end
+function RemoveRole(role)
+   SelectedRoles[role] = false
+
+   if (roleCards[role].guid ~= nil) then
+      getObjectFromGUID(roleCards[role].guid).highlightOff()
+   end
+
+   if roleCards[role].dependents ~= nil then
+      for _, r in pairs(roleCards[role].dependents) do
+         if SelectedRoles[r] then
+            RemoveRole(r)
+         end
+      end
+   end
+end
+
+function ExplainRole(object, clicked)
+   local desc = roleCards[object.getName()].description or ""
+   printToColor(desc, clicked, {1, 1, 0})
+end
+
+ToggledViews = {
+   ["Notes"] = {
+      ["White"] = true,
+      ["Brown"] = true,
+      ["Red"] = true,
+      ["Orange"] = true,
+      ["Yellow"] = true,
+      ["Green"] = true,
+      ["Teal"] = true,
+      ["Blue"] = true,
+      ["Purple"] = true,
+      ["Pink"] = true,
+   }
+}
+function ToggleShownVotes(player, mission, id)
+   if ToggledViews[mission] == nil then
+      ToggledViews[mission] = {}
+   end
+   if ToggledViews[mission][player.color] == nil then
+      ToggledViews[mission][player.color] = false
+      if mission == "Notes" then
+         ToggledViews[mission][player.color] = true
+      end
+   end
+
+   if ToggledViews[mission][player.color] then
+      ToggledViews[mission][player.color] = false
+   else
+      ToggledViews[mission][player.color] = true
+   end
+
+   local visibility = ""
+   for color, canSee in pairs(ToggledViews[mission]) do
+      if canSee then
+         if visibility == "" then
+            visibility = color
+         else
+            visibility = visibility .. "|" .. color
+         end
+      end
+   end
+
+   if visibility == "" then visibility = "__" end
+
+   if mission == "Notes" then
+      Global.UI.setAttributes("Mission Log", {visibility = visibility})
+   else
+      for i = 1, 5 do
+         Global.UI.setAttributes("Mission " .. mission .. " Vote Proposal " .. i, {visibility = visibility})
+         Global.UI.setAttributes("Mission " .. mission .. " Player Votes " .. i, {visibility = visibility})
+      end
+   end
+end
+
+GameData = { }
+
+PrevotingPlayers = {}
+
+GameListeners = {
+   ['Priority-State Change'] = { },
+   ['Pre-State Change'] = { },
+   ['On Save'] = { },
+   ['Post-State Change'] = {
+      {
+         onGamePostStateChange = function(self, state)
+         if state == "Leader Ready" then
+            BeginTeamSelect()
+
+            Global.UI.setAttributes("Mission " .. (GameData["Completed Missions"] + 1) .. " Label", {active = true, text = "Mission "..(GameData["Completed Missions"] + 1).." - Selecting Team"})
+         elseif state == "Team Proposed" then
+            GameData["Selected Votes"] = {}
+            Global.UI.setAttributes("Dialogue Box Button", { active = false })
+            Global.UI.setAttributes("Mission " .. (GameData["Completed Missions"] + 1) .. " Show Votes", {active = true, onClick = "ToggleShownVotes("..(GameData["Completed Missions"] + 1)..")"})
+
+            GameData["Vote Count"] = 0
+
+            for color, data in pairs(ActivePlayers) do
+               data.placard.highlightOff()
+               if not SelectedTeam[color] and not KeepTeamToken[color] then
+                  data.placard.UI.setAttributes("Team Token", { active = false })
+               else
+                  data.placard.UI.setAttributes("Team Token", { color = "#FFFFFF" })
+               end
+
+               if PrevotingPlayers[color] == nil then
+                  data.role:onVoteBegin()
+               end
+            end
+
+            local playerIndex = 1
+            for color, onTeam in pairs(SelectedTeam) do
+               if onTeam then
+                  local m = "Mission " .. (GameData["Completed Missions"] + 1) .. " Vote " .. ((GameData['Vote Rejects'] or 0) + 1) .. " Proposed Player " .. playerIndex
+                  local v = "■"
+                  local tooltip = Player[color].steam_name or color
+                  if color == GameData["Current Leader"] then
+                     v = "★"
+                     tooltip = "Leader: " .. tooltip
+                  elseif BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"] ~= nil and BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"].player == color then
+                     v = "◈"
+                     tooltip = "Sergeant: " .. tooltip
+                  elseif BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"] ~= nil and BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"].player == color then
+                     v = "●"
+                     tooltip = "Watching: " .. tooltip
+                  end
+
+                  Global.UI.setValue(m, v)
+                  Global.UI.setAttributes(m, { active = true, color = color, tooltip = tooltip })
+
+                  playerIndex = playerIndex + 1
+               end
+               if BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"] ~= nil and BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player == color then
+                  local m = "Mission " .. (GameData["Completed Missions"] + 1) .. " Vote " .. ((GameData['Vote Rejects'] or 0) + 1) .. " Proposed Investigator"
+                  Global.UI.setAttributes(m, { active = true, text = "�", color = color, tooltip = "Investigator: " .. (Player[color].steam_name or color) })
+               end
+            end
+
+            Global.UI.setAttributes("Mission " .. (GameData["Completed Missions"] + 1) .. " Vote Proposal " .. ((GameData['Vote Rejects'] or 0) + 1), { active = true })
+         elseif state == "Votes Submitted" then
+            for color, data in pairs(ActivePlayers) do
+               data.role:onVoteTally()
+            end
+
+            local voteResult = 0
+            local playerCount = 0
+            for color, vote in pairs(GameData["Selected Votes"]) do
+               if vote == "Approve" then
+                  voteResult = voteResult + 1
+                  playerCount = playerCount + 1
+
+                  if ActivePlayers[color] ~= nil then
+                     ActivePlayers[color].placard.UI.setAttributes("Vote Token", { color = "#FFFFFF", image = "Approve Card" })
+                     Global.UI.setAttributes(color.." Votes", { active = false })
+                     Global.UI.setValue("Mission " .. (GameData["Completed Missions"] + 1) .. " Vote " .. ((GameData['Vote Rejects'] or 0) + 1) .. " Player " .. playerCount .. " Vote", "☑")
+                     Global.UI.setAttributes("Mission " .. (GameData["Completed Missions"] + 1) .. " Vote " .. ((GameData['Vote Rejects'] or 0) + 1) .. " Player " .. playerCount .. " Vote", { active = true, color = color, tooltip = (Player[color].steam_name or color) .. " Approved"})
+                  end
+               elseif vote == "Reject" then
+                  voteResult = voteResult - 1
+                  playerCount = playerCount + 1
+
+                  if ActivePlayers[color] ~= nil then
+                     ActivePlayers[color].placard.UI.setAttributes("Vote Token", { color = "#FFFFFF", image = "Reject Card" })
+                     Global.UI.setAttributes(color.." Votes", { active = false })
+                     Global.UI.setValue("Mission " .. (GameData["Completed Missions"] + 1) .. " Vote " .. ((GameData['Vote Rejects'] or 0) + 1) .. " Player " .. playerCount .. " Vote", "☒")
+                     Global.UI.setAttributes("Mission " .. (GameData["Completed Missions"] + 1) .. " Vote " .. ((GameData['Vote Rejects'] or 0) + 1) .. " Player " .. playerCount .. " Vote", { active = true, color = color, tooltip = (Player[color].steam_name or color) .. " Approved"})
+                  end
+               end
+            end
+
+
+
+            Global.UI.setAttributes("Mission " .. (GameData["Completed Missions"] + 1) .. " Vote Proposal " .. ((GameData['Vote Rejects'] or 0) + 1), {active = true})
+
+            Global.UI.setAttributes("Dialogue Box", { active = false })
+
+            if voteResult > 0 then
+               -- Vote approved
+               UpdateGameState("Begin Mission")
+            else
+               -- Vote rejected
+               GameData['Vote Rejects'] = (GameData['Vote Rejects'] or 0) + 1
+
+               if GameData['Vote Rejects'] < 5 then
+                  SelectLeader()
+               else
+                  UpdateGameState("Spy Instant Win")
+               end
+            end
+         elseif state == "Begin Mission" then
+            Global.UI.setAttributes("Mission " .. (GameData["Completed Missions"] + 1) .. " Label", {active = true, text = "Mission "..GameData["Current Mission"].." - In Progress"})
+
+            GameData["Mission Count"] = 0
+
+            for i = 1, 7 do
+               getObjectFromGUID(MainBoardGUID).UI.setAttributes('Card '..i, {active = false })
+            end
+
+            local i = 1
+            Global.UI.setAttributes("Dialogue Box", { active = false })
+            for color, data in pairs(ActivePlayers) do
+               data.role:onBeginMission(SelectedTeam[color])
+
+               if SelectedTeam[color] then
+                  local v = "■"
+                  local tooltip = Player[color].steam_name or color
+                  if color == GameData["Current Leader"] then
+                     v = "★"
+                     tooltip = "Leader: " .. tooltip
+                  elseif BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"] ~= nil and BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Sergeant:</textcolor>"].player == color then
+                     v = "◈"
+                     tooltip = "Sergeant: " .. tooltip
+                  elseif BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"] ~= nil and BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Watching:</textcolor>"].player == color then
+                     v = "●"
+                     tooltip = "Watching: " .. tooltip
+                  end
+                  Global.UI.setAttributes("Mission " .. (GameData["Completed Missions"] + 1) .. " Player " .. i, {text = v, active = true, color = color, tooltip = tooltip})
+                  i = i + 1
+               end
+
+               if BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"] ~= nil and BonusTeamRequirements["\n<textcolor color=\"#7F7F7F\">Investigator:</textcolor>"].player == color then
+                  Global.UI.setAttributes("Mission " .. (GameData["Completed Missions"] + 1) .. " Investigator", { active = true, text = "�", color = color, tooltip = "Investigator: " .. (Player[color].steam_name or color) })
+               end
+            end
+         elseif state == "Mission Result" then
+            local playedCards = {}
+            local result = 0
+            local card = nil
+
+            for color, data in pairs(ActivePlayers) do
+               playedCards, result = data.role:onMissionTally(SelectedTeam[color], playedCards, result)
+            end
+
+            local missionResult = "Success"
+            if result > 1 then
+               missionResult = "Fail"
+            elseif result > 0 then
+               if GameData["Current Mission"] == 4 and GameData["Active Player Count"] >= 7 then
+                  missionResult = "Success"
+               else
+                  missionResult = "Fail"
+               end
+            else
+               missionResult = "Success"
+            end
+
+            for color, data in pairs(ActivePlayers) do
+               playedCards, missionResult = data.role:onMissionResults(SelectedTeam[color], playedCards, missionResult)
+            end
+
+            for _, data in pairs(ActiveOptions) do
+               playedCards, missionResult = data:onMissionResults(playedCards, missionResult)
+            end
+
+            if playedCards == nil or missionResult == nil then return end
+
+            if missionResult == "Fail" then
+               -- Always fail
+               GameData["Mission Results"][GameData["Current Mission"]] = "Fail"
+               GameData["Mission Results"].FailCount = (GameData["Mission Results"].FailCount or 0) + 1
+               getObjectFromGUID(MainBoardGUID).UI.setAttributes('Token '..GameData["Current Mission"], { active = true, image = "Spy Token" })
+               broadcastToAll("Mission Failed", {1, 0.4, 0.4})
+
+               for color, data in pairs(ActivePlayers) do
+                  data.role:onMissionFail(SelectedTeam[color])
+               end
+            elseif missionResult == "Success" then
+               -- Success
+               GameData["Mission Results"][GameData["Current Mission"]] = "Success"
+               GameData["Mission Results"].SuccessCount = (GameData["Mission Results"].SuccessCount or 0) + 1
+               getObjectFromGUID(MainBoardGUID).UI.setAttributes('Token '..GameData["Current Mission"], { active = true, image = "Resistance Token" })
+               broadcastToAll("Mission Succeeded", {0, 1, 1})
+
+               for color, data in pairs(ActivePlayers) do
+                  data.role:onMissionSuccess(SelectedTeam[color])
+               end
+            elseif missionResult == "Extract" then
+               broadcastToAll("Mission Extracted", {1, 1, 0})
+            elseif missionResult == "Sabotage" then
+               if GameData["Mission Results"].SuccessCount >= GameData["Mission Results"].FailCount then
+                  -- Always fail
+                  GameData["Mission Results"][GameData["Current Mission"]] = "Fail"
+                  GameData["Mission Results"].FailCount = (GameData["Mission Results"].FailCount or 0) + 1
+                  getObjectFromGUID(MainBoardGUID).UI.setAttributes('Token '..GameData["Current Mission"], { active = true, image = "Spy Token" })
+                  broadcastToAll("Mission Failed", {1, 0.4, 0.4})
+               else
+                  GameData["Mission Results"][GameData["Current Mission"]] = "Success"
+                  GameData["Mission Results"].SuccessCount = (GameData["Mission Results"].SuccessCount or 0) + 1
+                  getObjectFromGUID(MainBoardGUID).UI.setAttributes('Token '..GameData["Current Mission"], { active = true, image = "Resistance Token" })
+                  broadcastToAll("Mission Succeeded", {0, 1, 1})
+               end
+
+               if GameData["Current Mission"] == 5 then
+                  playedCards = Shuffle(playedCards)
+                  local i = 1
+                  for clr, card in pairs(playedCards) do
+                     getObjectFromGUID(MainBoardGUID).UI.setAttributes('Card '..i, {active = true, image = card .. " Card", color = "#FFFFFF"})
+                     i = i + 1
+                  end
+
+                  broadcastToAll("The Mole has won!", {1, 0.5, 0.4})
+                  SpecialWinner = "Mole"
+                  UpdateGameState("Solo Win")
+                  return
+               end
+            end
+
+            playedCards = Shuffle(playedCards)
+            local i = 1
+            for clr, card in pairs(playedCards) do
+               getObjectFromGUID(MainBoardGUID).UI.setAttributes('Card '..i, {active = true, image = card .. " Card", color = "#FFFFFF"})
+               Global.UI.setAttributes("Mission " .. (GameData["Completed Missions"] + 1) .. " Card " .. i, { active = true, image = card .. " Card", tooltip = card })
+               i = i + 1
+            end
+
+            Global.UI.setAttributes("Mission " ..(GameData["Completed Missions"] + 1) .. " Label", {active = true, text = "Mission "..GameData["Current Mission"].." - "..missionResult})
+            Global.UI.setAttributes("Mission " .. (GameData["Completed Missions"] + 1) .. " Results", {active = true})
+
+            if missionResult == "Extract" then
+               GameData["Current Mission"] = GameData["Current Mission"] - 1
+            end
+
+            UpdateGameState("Mission End")
+         elseif state == "Mission End" then
+            GameData['Vote Rejects'] = 0
+            GameData["Current Mission"] = GameData["Current Mission"] + 1
+            GameData["Completed Missions"] = GameData["Completed Missions"] + 1
+            if GameData["Mission Results"].FailCount == 3 or GameData["Mission Results"].SuccessCount == 3 then
+               UpdateGameState("Game Over")
+            else
+               SelectLeader()
+            end
+         elseif state == "Game Over" then
+            UpdateGameState("End Game")
+         elseif state == "End Game" then
+            local spyWin = (GameData["Mission Results"].FailCount == 3)
+            if spyWin then
+               broadcastToAll("The Spies have won!", {1, 0.4, 0.4})
+            else
+               broadcastToAll("The Resistance have won!", {0, 1, 1})
+            end
+
+            for color, data in pairs(ActivePlayers) do
+               local victorSize = "1 2"
+               local pos = "0 250 -400"
+               if (spyWin and data.role.team == "Spy") or (not spyWin and data.role.team == "Resistance") then
+                  victorSize = "2 4"
+                  pos = "0 300 -800"
+               end
+               data.placard.UI.setAttributes("Public Role Image", { active = true, position = pos, image = data.role.image, scale = victorSize })
+
+               data.placard.UI.setAttributes("Outer Role Image White", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Brown", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Red", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Orange", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Yellow", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Green", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Teal", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Blue", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Purple", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Pink", { active = false })
+            end
+
+            local data = {click_function = "StartButton", function_owner = self, label = "Start", position = {0, 0.8, 0}, rotation = {0, 180, 0}, scale = {0.7, 0.7, 0.7}, width = 1000, height = 400, font_size = 400}
+            getObjectFromGUID("4cbdcc").createButton(data)
+         elseif state == "Spy Instant Win" then
+            broadcastToAll("The Spies have won!", {1, 0.4, 0.4})
+
+            for color, data in pairs(ActivePlayers) do
+               local victorSize = "1 2"
+               local pos = "0 250 -400"
+               if data.role.team == "Spy" then
+                  victorSize = "2 4"
+                  pos = "0 300 -800"
+               end
+               data.placard.UI.setAttributes("Public Role Image", { active = true, position = pos, image = data.role.image, scale = victorSize })
+
+               data.placard.UI.setAttributes("Outer Role Image White", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Brown", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Red", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Orange", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Yellow", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Green", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Teal", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Blue", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Purple", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Pink", { active = false })
+            end
+
+            local data = {click_function = "StartButton", function_owner = self, label = "Start", position = {0, 0.8, 0}, rotation = {0, 180, 0}, scale = {0.7, 0.7, 0.7}, width = 1000, height = 400, font_size = 400}
+            getObjectFromGUID("4cbdcc").createButton(data)
+         elseif state == "Solo Win" then
+            for color, data in pairs(ActivePlayers) do
+               local victorSize = "1 2"
+               local pos = "0 250 -400"
+               if data.role.name == SpecialWinner then
+                  victorSize = "2 4"
+                  pos = "0 300 -800"
+               end
+               data.placard.UI.setAttributes("Public Role Image", { active = true, position = pos, image = data.role.image, scale = victorSize })
+
+               data.placard.UI.setAttributes("Outer Role Image White", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Brown", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Red", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Orange", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Yellow", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Green", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Teal", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Blue", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Purple", { active = false })
+               data.placard.UI.setAttributes("Outer Role Image Pink", { active = false })
+            end
+
+            local data = {click_function = "StartButton", function_owner = self, label = "Start", position = {0, 0.8, 0}, rotation = {0, 180, 0}, scale = {0.7, 0.7, 0.7}, width = 1000, height = 400, font_size = 400}
+            getObjectFromGUID("4cbdcc").createButton(data)
+         end
+      end
+   }
+},
+}
+
+SpecialWinner = ""
+
+PlayerCountData = {
+[5] = { spyCount = 2, missions = { 2, 3, 2, 3, 3 }, board = 'http://cloud-3.steamusercontent.com/ugc/877501262317497712/8B9E25DC24FAE7FECCA3379B721D16A1522F28E3/' },
+[6] = { spyCount = 2, missions = { 2, 3, 4, 3, 4 }, board = 'http://cloud-3.steamusercontent.com/ugc/877501262317503230/F5515CEA6923DAF1AE87CCF63AE6AABCFDAC52F2/' },
+[7] = { spyCount = 3, missions = { 2, 3, 3, 4, 4 }, board = 'http://cloud-3.steamusercontent.com/ugc/877501262317505110/E33AF2D4680447691DBD3C197EE1A3183E3A0A80/' },
+[8] = { spyCount = 3, missions = { 3, 4, 4, 5, 5 }, board = 'http://cloud-3.steamusercontent.com/ugc/877501262317505512/6063C51383D20B16C6BEC7B33558D8DB6CA93600/' },
+[9] = { spyCount = 3, missions = { 3, 4, 4, 5, 5 }, board = 'http://cloud-3.steamusercontent.com/ugc/877501262317506162/E08E0FF6C93B52EC64AC40689CBE5D6B834648E9/' },
+[10] = { spyCount = 4, missions = { 3, 4, 4, 5, 5 }, board = 'http://cloud-3.steamusercontent.com/ugc/877501262317506716/DA4FE3225D89998855EBC74801D3A71ECDF9607D/' },
+}
+
+hexColors = {
+['White'] = "#FFFFFF",
+['Brown'] = "#703A16",
+['Red'] = "#DA1917",
+['Orange'] = "#F3631C",
+['Yellow'] = "#E6E42B",
+['Green'] = "#30B22A",
+['Teal'] = "#20B09A",
+['Blue'] = "#1E87FF",
+['Purple'] = "#9F1FEF",
+['Pink'] = "#F46FCD",
+['Grey'] = "#7F7F7F",
+['Black'] = "#3F3F3F",
+}
